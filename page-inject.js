@@ -185,6 +185,37 @@
     }).catch(function () { });
   }
 
+  // 7. ALL NO MARKETS dedicated page - hide everything but the NO book
+  if (location.pathname === '/all-no-markets') {
+    setTimeout(() => {
+      // Hide the tiles, strategy cards, feeds, funding, account panels, etc.
+      var toHide = ['tiles', 'calibBodyWrap', 'llmUsageBodyWrap', 'feedsBody', 'accountCard'];
+      toHide.forEach(function(id) { var el = $(id); if (el) el.style.display = 'none'; });
+      // Hide the panels that contain strategy cards
+      var panels = document.querySelectorAll('.panel');
+      var found = 0;
+      for (var i = 0; i < panels.length; i++) {
+        var p = panels[i];
+        var h = p.querySelector('h2');
+        if (!h) continue;
+        var text = h.textContent.toLowerCase();
+        if (text.indexOf('all no') === -1 && (text.indexOf('strategy') !== -1 || text.indexOf('calibration') !== -1 || text.indexOf('router') !== -1 || text.indexOf('position') !== -1 || text.indexOf('readiness') !== -1 || text.indexOf('inventory') !== -1 || text.indexOf('funding') !== -1 || text.indexOf('kalshi account') !== -1 || text.indexOf('performance') !== -1 || text.indexOf('cumulative') !== -1)) {
+          p.style.display = 'none';
+        }
+        if (text.indexOf('all no') !== -1) found++;
+      }
+      // Add a back link at the top if not already there
+      if (found && !$('allNoBackLink')) {
+        var bk = document.createElement('a');
+        bk.id = 'allNoBackLink';
+        bk.href = '/';
+        bk.textContent = '← Back to DRY';
+        bk.style.cssText = 'position:fixed;top:12px;left:12px;z-index:8900;color:#4d9fff;text-decoration:none;font-size:12px;font-weight:600';
+        document.body.appendChild(bk);
+      }
+    }, 500);
+  }
+
   setInterval(renderNoBook, 3000);
   setInterval(paintProof, 5000);
   setInterval(paintModeStrip, 4000);

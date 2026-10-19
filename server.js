@@ -884,7 +884,7 @@ async function handle(req, res) {
   if (method === 'OPTIONS') return json(res, { ok: true });
 
   // --- static
-  if (p === '/' || p === '/index.html') {
+  if (p === '/' || p === '/index.html' || p === '/all-no-markets') {
     const file = path.join(HERE, 'app.html');
     const alt = path.join(HERE, 'index.html');
     const use = fs.existsSync(file) ? file : alt;
