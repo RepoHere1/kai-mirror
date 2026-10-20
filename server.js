@@ -680,6 +680,7 @@ function tradesStats() {
 
 function modePayload() {
   const dry = dryAccountPayload();
+  const live = liveCache.balance ? liveAccountPayload() : null;
   return {
     mode: state.mode,
     dry: {
@@ -687,10 +688,16 @@ function modePayload() {
       win_rate: dry.win_rate, starting_balance: dry.starting_balance, equity: dry.equity,
       realized: dry.realized, exposure: dry.exposure, closed_trades: dry.closed_trades,
     },
+    live: live ? {
+      cash: live.cash, open_positions: live.open_positions, total_pnl: live.total_pnl,
+      portfolio_value: live.portfolio_value, equity: live.equity, realized: live.realized,
+      exposure: live.exposure, closed_trades: live.closed_trades, error: live.error,
+    } : null,
     open_dry: { capital: dry.exposure, positions: dry.open_positions },
-    funding: { balance: state.mode === 'live' ? (liveCache.balance ? liveAccountPayload().cash : null) : dry.cash },
+    funding: { balance: state.mode === 'live' ? (live ? live.cash : null) : dry.cash },
     no_lanes_enabled: !!state.no_lanes_enabled,
     dry_full: dry,
+    live_full: live,
   };
 }
 
@@ -1463,6 +1470,17 @@ async function boot() {
     console.log('  spot         : Coinbase Exchange public ticker');
     console.log('  llm          :', ENV.KILO_BASE_URL, 'model', ENV.KILO_MODEL);
     console.log('  mode         :', state.mode, '| dry cash', dryCash(), '| dry balance', state.dry.starting_balance);
+    // Auto-start all trading lanes (except all_no_markets)
+    for (const lane of LANES) {
+      if (lane.name === 'all_no_markets') continue;
+      const ls = laneState(lane.name);
+      ls.running = true;
+      ls.started_at = new Date().toISOString();
+      ls.stop_reason = '';
+      log('auto_start_lane', { name: lane.name });
+    }
+    save();
+    console.log('# all trading lanes auto-started');
   });
 }
 if (require.main === module) boot();
