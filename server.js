@@ -1078,15 +1078,19 @@ async function serveDashboard(route, res) {
   rememberTitles(LANES);
   const snap = snapshotPayload();
   snap.mode = { mode };
-  const file = path.join(HERE, 'dashboard.html');
+  const file = path.join(HERE, 'index.html');
   try {
     let html = fs.readFileSync(file, 'utf8');
     // Inject SNAPSHOT before the closing body tag
     const snapshotJson = JSON.stringify(snap);
     const injection = `const SNAPSHOT = ${snapshotJson};`;
     html = html.replace('</body>', injection + '\n</body>');
-    // Set data-mode attribute on body tag for styling
-    html = html.replace(/body(\s|>)/, `body data-mode="${mode}"$1`);
+    // Set data-mode attribute on body tag - IMPORTANT: Replace ALL occurrences, not just first
+    html = html.replace(/data-mode="[^"]*"/g, `data-mode="${mode}"`);
+    // Also try replacing bare <body to add the attribute if missing
+    if (!html.includes('data-mode=')) {
+      html = html.replace(/<body([^>]*?)>/, `<body data-mode="${mode}"$1>`);
+    }
     res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
     return res.end(html);
   } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
