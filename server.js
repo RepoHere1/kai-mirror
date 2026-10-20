@@ -883,8 +883,8 @@ async function handle(req, res) {
 
   if (method === 'OPTIONS') return json(res, { ok: true });
 
-  // --- static
-  if (p === '/' || p === '/index.html' || p === '/all-no-markets') {
+  // --- static pages (DRY, LIVE, ALL NO - all use app.html as base, page-inject.js controls visibility)
+  if (p === '/' || p === '/index.html' || p === '/live' || p === '/all-no-markets') {
     const file = path.join(HERE, 'app.html');
     const alt = path.join(HERE, 'index.html');
     const use = fs.existsSync(file) ? file : alt;

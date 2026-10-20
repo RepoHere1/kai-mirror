@@ -6,6 +6,7 @@
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
+  var currentView = 'dry'; // Track which view is active
 
   // ---------------------------------------------------------------------
   // 1. file:// guard - /api/* only exists on the local server
@@ -185,36 +186,71 @@
     }).catch(function () { });
   }
 
-  // 7. ALL NO MARKETS dedicated page - hide everything but the NO book
-  if (location.pathname === '/all-no-markets') {
-    setTimeout(() => {
-      // Hide the tiles, strategy cards, feeds, funding, account panels, etc.
-      var toHide = ['tiles', 'calibBodyWrap', 'llmUsageBodyWrap', 'feedsBody', 'accountCard'];
-      toHide.forEach(function(id) { var el = $(id); if (el) el.style.display = 'none'; });
-      // Hide the panels that contain strategy cards
-      var panels = document.querySelectorAll('.panel');
-      var found = 0;
-      for (var i = 0; i < panels.length; i++) {
-        var p = panels[i];
-        var h = p.querySelector('h2');
-        if (!h) continue;
-        var text = h.textContent.toLowerCase();
-        if (text.indexOf('all no') === -1 && (text.indexOf('strategy') !== -1 || text.indexOf('calibration') !== -1 || text.indexOf('router') !== -1 || text.indexOf('position') !== -1 || text.indexOf('readiness') !== -1 || text.indexOf('inventory') !== -1 || text.indexOf('funding') !== -1 || text.indexOf('kalshi account') !== -1 || text.indexOf('performance') !== -1 || text.indexOf('cumulative') !== -1)) {
-          p.style.display = 'none';
+  // 7. Wire button navigation for DRY/LIVE/ALL NO
+  var dryBtn = $('modeDry');
+  var liveBtn = $('modeLive');
+  var allNoBtn = $('allNoBtn');
+  if (dryBtn) dryBtn.onclick = function(e) { e.preventDefault(); fetch('/api/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'dry' }) }).then(() => { location.pathname = '/'; }); };
+  if (liveBtn) liveBtn.onclick = function(e) { e.preventDefault(); fetch('/api/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'live' }) }).then(() => { location.pathname = '/live'; }); };
+  if (allNoBtn) allNoBtn.href = '/all-no-markets';
+
+  // 8. LIVE mode styling - red border and mode indicator
+  function setupLiveMode() {
+    if (document.body.dataset.mode === 'live') {
+      // Inject LIVE warning banner if not exists
+      if (!$('liveWarning')) {
+        var banner = document.createElement('div');
+        banner.id = 'liveWarning';
+        banner.style.cssText = 'background:rgba(161,0,0,.16);border:1px solid rgba(161,0,0,.22);border-radius:14px;padding:12px 14px;margin-bottom:14px;color:#e6edf6;font-weight:500';
+        banner.innerHTML = '<b style="color:#a10000">LIVE MODE — real orders, real money.</b> Every fill below is a real Kalshi trade against the production account. Account balance: <b>$2.81</b>. Every strategy started from here will place real orders until you switch back to DRY.';
+        var wrap = document.querySelector('.wrap');
+        if (wrap) {
+          var header = wrap.querySelector('header');
+          if (header && header.nextSibling) {
+            header.parentNode.insertBefore(banner, header.nextSibling);
+          }
         }
-        if (text.indexOf('all no') !== -1) found++;
       }
-      // Add a back link at the top if not already there
-      if (found && !$('allNoBackLink')) {
-        var bk = document.createElement('a');
-        bk.id = 'allNoBackLink';
-        bk.href = '/';
-        bk.textContent = '← Back to DRY';
-        bk.style.cssText = 'position:fixed;top:12px;left:12px;z-index:8900;color:#4d9fff;text-decoration:none;font-size:12px;font-weight:600';
-        document.body.appendChild(bk);
-      }
-    }, 500);
+    }
   }
+  
+  // 9. View switching - show DRY/LIVE/ALL NO based on current pathname
+  function setupViewSwitching() {
+    var path = location.pathname;
+    
+    if (path === '/' || path === '/index.html') {
+      // DRY view - show everything as normal
+      document.body.dataset.view = 'dry';
+    } else if (path === '/live') {
+      // LIVE view - show EVERYTHING with LIVE styling
+      document.body.dataset.view = 'live';
+      document.body.dataset.mode = 'live';
+      setupLiveMode();
+    } else if (path === '/all-no-markets') {
+      // ALL NO MARKETS view - hide all but the ALL NO table
+      document.body.dataset.view = 'allno';
+      setTimeout(function() {
+        var tiles = document.querySelector('.tiles');
+        if (tiles) tiles.style.display = 'none';
+        var panels = document.querySelectorAll('.panel');
+        for (var i = 0; i < panels.length; i++) {
+          var p = panels[i];
+          var h = p.querySelector('h2');
+          if (h && h.textContent.toLowerCase().indexOf('all no') !== -1) {
+            p.style.display = 'block';
+          } else if (h) {
+            p.style.display = 'none';
+          }
+        }
+        var rows = document.querySelectorAll('.row');
+        for (var j = 0; j < rows.length; j++) {
+          rows[j].style.display = 'none';
+        }
+      }, 100);
+    }
+  }
+  
+  setupViewSwitching();
 
   setInterval(renderNoBook, 3000);
   setInterval(paintProof, 5000);
