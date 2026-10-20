@@ -156,4 +156,23 @@ async function post(route, body) {
   }
 }
 
-module.exports = { loadEnv, ENV, accounts, sign, raw, get, post, LIVE_BASE, DEMO_BASE, cache };
+// Convenience methods for common queries
+async function portfolio() {
+  const bal = await get('/portfolio/balance', { ttlMs: 4000 });
+  const pos = await get('/portfolio/positions', { query: { limit: 200 }, ttlMs: 8000 });
+  let fills = null;
+  try { fills = await get('/portfolio/fills', { query: { limit: 200 }, ttlMs: 15000 }); } catch (e) { }
+  return {
+    balance: bal.data,
+    positions: pos.data,
+    fills: fills ? fills.data : null,
+    source: bal.source,
+    host: bal.host,
+  };
+}
+
+async function markets(series, limit) {
+  return get('/markets', { query: { limit: limit || 5, status: 'open', series_ticker: series }, ttlMs: 1500 });
+}
+
+module.exports = { loadEnv, ENV, accounts, sign, raw, get, post, LIVE_BASE, DEMO_BASE, cache, portfolio, markets };

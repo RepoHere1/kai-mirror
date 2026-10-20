@@ -50,10 +50,15 @@ const LANE_BY_NAME = new Map(LANES.map(l => [l.name, l]));
 const STATE_FILE = path.join(HERE, 'state.json');
 function defaultState() {
   const start = Number(ENV.DRY_START_BALANCE || 300);
+  const allNoStart = 250;
   return {
     mode: 'dry',
     no_lanes_enabled: true,
     dry: { starting_balance: start, baseline: start, positions: [], closed: [], real_started: true },
+    all_no: {
+      dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
+      live: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
+    },
     runtime: { clip: 5, min_edge: 0.06, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 45, entry_cooldown_sec: 120 },
     lanes: {},
     alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
@@ -65,7 +70,11 @@ function loadState() {
   try {
     const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     const base = defaultState();
-    return Object.assign(base, raw, { runtime: Object.assign(base.runtime, raw.runtime || {}), dry: Object.assign(base.dry, raw.dry || {}) });
+    return Object.assign(base, raw, {
+      runtime: Object.assign(base.runtime, raw.runtime || {}),
+      dry: Object.assign(base.dry, raw.dry || {}),
+      all_no: Object.assign(base.all_no, raw.all_no || {}),
+    });
   } catch (e) { return defaultState(); }
 }
 let state = loadState();
@@ -792,9 +801,94 @@ function lastProvenance() {
 }
 
 // ---------------------------------------------------------------------------
-// ALL NO book - real NO-side quotes
+// ALL NO book - separate book tracking NO-side market positions + trades
 // ---------------------------------------------------------------------------
+function getAllNoBook() {
+  // Return current ALL NO book state (open positions + closed trades + tallies)
+  const mode = state.mode;
+  const book = state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 };
+  
+  // Calculate tallies from closed trades
+  const closed = book.closed_trades || [];
+  const wins = closed.filter(t => t.pnl > 0).length;
+  const losses = closed.filter(t => t.pnl < 0).length;
+  const win_rate = closed.length > 0 ? (wins / closed.length) * 100 : 0;
+  const total_fees = closed.reduce((sum, t) => sum + (t.fee_paid || 0), 0);
+  const avg_entry = closed.length > 0 ? closed.reduce((sum, t) => sum + t.entry_price, 0) / closed.length : 0;
+  
+  // Calculate open tally
+  const open = book.positions || [];
+  const open_cost = open.reduce((sum, p) => sum + p.cost, 0);
+  const open_sweet = open.filter(p => p.entry_price >= 0.84 && p.entry_price <= 0.92).length;
+  
+  return {
+    book: {
+      balance: Number(book.balance.toFixed(2)),
+      starting: book.starting_balance,
+      pnl: Number(book.total_pnl.toFixed(2)),
+      entries: book.entries,
+      mode: mode,
+    },
+    open_rows: (open || []).map(p => ({
+      id: p.id,
+      market_id: p.market_id,
+      strategy: p.strategy || 'all_no_markets',
+      side: 'NO',
+      entry_price: p.entry_price,
+      quantity: p.quantity,
+      cost: Number(p.cost.toFixed(2)),
+      entry_fair: p.fair_at_entry || 0.5,
+      edge: Number((p.edge_at_entry || 0).toFixed(3)),
+      kelly: Number((p.kelly_fraction || 0).toFixed(3)),
+      stop_loss: p.stop_loss,
+      take_profit: p.take_profit,
+      confidence: p.confidence || 0,
+      expiration: p.expiration,
+      status: p.status || 'resting',
+      mode: mode,
+      timestamp: p.opened_at,
+    })),
+    closed_rows: (closed || []).map(t => ({
+      id: t.id,
+      market_id: t.market_id,
+      strategy: t.strategy || 'all_no_markets',
+      side: 'NO',
+      entry_price: t.entry_price,
+      exit_price: t.exit_price,
+      quantity: t.quantity,
+      cost: Number(t.cost.toFixed(2)),
+      proceeds: Number(t.proceeds.toFixed(2)),
+      pnl: Number(t.pnl.toFixed(2)),
+      roi: t.quantity > 0 ? Number(((t.pnl / t.cost) * 100).toFixed(1)) : 0,
+      entry_fair: t.fair_at_entry || 0.5,
+      kelly: Number((t.kelly_fraction || 0).toFixed(3)),
+      fee_paid: Number((t.fee_paid || 0).toFixed(3)),
+      exit_reason: t.exit_reason,
+      mode: mode,
+      entry_timestamp: t.opened_at,
+      exit_timestamp: t.closed_at,
+    })),
+    tally: {
+      closed: closed.length,
+      wins,
+      losses,
+      win_rate: Number(win_rate.toFixed(1)),
+      pnl: Number(book.total_pnl.toFixed(2)),
+      fees: Number(total_fees.toFixed(2)),
+      avg_entry: avg_entry,
+    },
+    open_tally: {
+      positions: open.length,
+      contracts: open.reduce((sum, p) => sum + p.quantity, 0),
+      cost: Number(open_cost.toFixed(2)),
+      sweet: open_sweet,
+    },
+    no_lanes_enabled: state.no_lanes_enabled,
+  };
+}
+
 async function noBook() {
+  // Return available NO-side market recommendations for potential entries
   const rows = [];
   const series = Array.from(new Set(LANES.flatMap(l => l.seriesList || []).filter(Boolean)));
   for (const s of series) {
@@ -831,6 +925,94 @@ async function noBook() {
   rows.sort((a, b) => b.edge - a.edge);
   return rows;
 }
+
+// ---------------------------------------------------------------------------
+// ALL NO MARKETS - Entry/Exit Trade Functions
+// ---------------------------------------------------------------------------
+function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration) {
+  const mode = state.mode;
+  const book = state.all_no[mode];
+  if (!book) return { error: 'Book not found' };
+  
+  const cost = Number((entry_price * quantity).toFixed(2));
+  if (book.balance < cost) {
+    return { error: 'Insufficient balance: need ' + cost.toFixed(2) + ', have ' + book.balance.toFixed(2) };
+  }
+  
+  const id = market_id + '-' + Date.now();
+  const position = {
+    id,
+    market_id,
+    strategy: 'all_no_markets',
+    entry_price: Number(entry_price.toFixed(3)),
+    quantity: Math.floor(quantity),
+    cost,
+    fair_at_entry: Number(fair_at_entry.toFixed(3)),
+    edge_at_entry: Number(edge.toFixed(3)),
+    kelly_fraction: Number((kelly * 100).toFixed(2)),
+    stop_loss: stop_loss ? Number(stop_loss.toFixed(3)) : null,
+    take_profit: take_profit ? Number(take_profit.toFixed(3)) : null,
+    confidence: Number(confidence.toFixed(2)),
+    expiration,
+    status: 'resting',
+    opened_at: new Date().toISOString(),
+  };
+  
+  // Deduct cost from balance and record entry
+  book.balance -= cost;
+  book.positions.push(position);
+  book.entries++;
+  save();
+  log('all_no_entry', { id, market_id, entry_price, quantity, cost, balance_after: book.balance });
+  
+  return { ok: true, position, balance: book.balance };
+}
+
+function closeAllNoPosition(position_id, exit_price, exit_reason) {
+  const mode = state.mode;
+  const book = state.all_no[mode];
+  if (!book) return { error: 'Book not found' };
+  
+  const idx = book.positions.findIndex(p => p.id === position_id);
+  if (idx === -1) return { error: 'Position not found' };
+  
+  const pos = book.positions[idx];
+  const proceeds = Number((pos.quantity * exit_price).toFixed(2));
+  const pnl = Number((proceeds - pos.cost).toFixed(2));
+  const roi = pos.cost > 0 ? Number(((pnl / pos.cost) * 100).toFixed(1)) : 0;
+  const fee_paid = Number((proceeds * 0.0175).toFixed(3)); // 1.75% maker fee
+  const net_pnl = Number((pnl - fee_paid).toFixed(2));
+  
+  const trade = {
+    id: pos.id,
+    market_id: pos.market_id,
+    strategy: pos.strategy,
+    entry_price: pos.entry_price,
+    exit_price: Number(exit_price.toFixed(3)),
+    quantity: pos.quantity,
+    cost: pos.cost,
+    proceeds,
+    pnl: net_pnl,
+    roi,
+    fair_at_entry: pos.fair_at_entry,
+    kelly_fraction: pos.kelly_fraction,
+    fee_paid,
+    exit_reason,
+    opened_at: pos.opened_at,
+    closed_at: new Date().toISOString(),
+  };
+  
+  // Update book
+  book.positions.splice(idx, 1);
+  book.closed_trades.push(trade);
+  book.balance += proceeds - fee_paid;
+  book.total_pnl += net_pnl;
+  save();
+  log('all_no_exit', { id: pos.id, market_id: pos.market_id, entry: pos.entry_price, exit: exit_price, pnl: net_pnl, balance_after: book.balance });
+  
+  return { ok: true, trade, balance: book.balance, pnl: net_pnl };
+}
+
 function strategyForSeries(series) {
   const lane = LANES.find(l => (l.seriesList || []).includes(series));
   return lane ? lane.name : 'unmapped';
@@ -876,6 +1058,45 @@ function readBody(req) {
 }
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
+async function serveDashboard(route, res) {
+  // Dashboard: read actual mode from state.mode (DRY or LIVE)
+  // Route /live triggers a refresh after mode switch, but doesn't determine mode itself
+  const mode = state.mode || 'dry';
+  
+  // If LIVE mode is active, refresh live data
+  if (mode === 'live') {
+    await refreshLive(false);
+  }
+  
+  rememberTitles(LANES);
+  const snap = snapshotPayload();
+  snap.mode = { mode };
+  const file = path.join(HERE, 'dashboard.html');
+  try {
+    let html = fs.readFileSync(file, 'utf8');
+    // Inject SNAPSHOT before the closing body tag
+    const snapshotJson = JSON.stringify(snap);
+    const injection = `const SNAPSHOT = ${snapshotJson};`;
+    html = html.replace('</body>', injection + '\n</body>');
+    // Set data-mode attribute on body tag for styling
+    html = html.replace(/body(\s|>)/, `body data-mode="${mode}"$1`);
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+    return res.end(html);
+  } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
+}
+
+async function serveAllNoMarkets(res) {
+  // ALL NO MARKETS: separate white-ledger page with independent book data
+  const file = path.join(HERE, 'all-no-markets.html');
+  try {
+    let html = fs.readFileSync(file, 'utf8');
+    // TODO: In Phase 2, inject ALL NO book data here (open positions, closed trades, tallies)
+    // For now, page loads data via /api/no-lanes/book on client side
+    res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+    return res.end(html);
+  } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
+}
+
 async function handle(req, res) {
   const u = new URL(req.url, 'http://' + HOST + ':' + PORT);
   const p = u.pathname;
@@ -883,16 +1104,15 @@ async function handle(req, res) {
 
   if (method === 'OPTIONS') return json(res, { ok: true });
 
-  // --- static pages (DRY, LIVE, ALL NO - all use app.html as base, page-inject.js controls visibility)
-  if (p === '/' || p === '/index.html' || p === '/live' || p === '/all-no-markets') {
-    const file = path.join(HERE, 'app.html');
-    const alt = path.join(HERE, 'index.html');
-    const use = fs.existsSync(file) ? file : alt;
-    try {
-      const html = fs.readFileSync(use, 'utf8');
-      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
-      return res.end(html);
-    } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
+  // --- static pages: dashboard (DRY/LIVE) and ALL NO MARKETS (separate white ledger)
+  if (p === '/' || p === '/index.html') {
+    return serveDashboard('/', res);
+  }
+  if (p === '/live') {
+    return serveDashboard('/live', res);
+  }
+  if (p === '/all-no-markets') {
+    return serveAllNoMarkets(res);
   }
   if (/^\/[A-Za-z0-9_.\-]+\.(js|css|png|svg|json)$/.test(p)) {
     const file = path.join(HERE, path.basename(p));
@@ -958,8 +1178,38 @@ async function handle(req, res) {
   }
   if (p === '/api/no-lanes') return json(res, { no_lanes_enabled: !!state.no_lanes_enabled });
   if (p === '/api/no-lanes/book') {
-    const rows = await noBook();
-    return json(res, { rows, count: rows.length, no_lanes_enabled: !!state.no_lanes_enabled, generated_at: new Date().toISOString() });
+    // Return ALL NO book: positions, trades, and tallies
+    const bookData = getAllNoBook();
+    return json(res, Object.assign(bookData, { generated_at: new Date().toISOString() }));
+  }
+  
+  if (p === '/api/no-lanes/entry' && method === 'POST') {
+    // Create a new ALL NO MARKETS position
+    const b = await readBody(req);
+    const result = createAllNoEntry(
+      b.market_id,
+      Number(b.entry_price),
+      Number(b.quantity),
+      Number(b.fair_at_entry || 0.5),
+      Number(b.edge || 0),
+      Number(b.kelly || 0),
+      b.stop_loss ? Number(b.stop_loss) : null,
+      b.take_profit ? Number(b.take_profit) : null,
+      Number(b.confidence || 0),
+      b.expiration
+    );
+    return json(res, result, result.error ? 400 : 200);
+  }
+  
+  if (p === '/api/no-lanes/exit' && method === 'POST') {
+    // Close an ALL NO MARKETS position
+    const b = await readBody(req);
+    const result = closeAllNoPosition(
+      b.position_id,
+      Number(b.exit_price),
+      b.exit_reason || 'manual'
+    );
+    return json(res, result, result.error ? 400 : 200);
   }
 
   // --- dry controls

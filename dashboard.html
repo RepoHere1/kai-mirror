@@ -350,13 +350,13 @@ button.loading.yellow::after {
     </div>
     <!-- DRY / LIVE switch. ALL NO MARKETS sits in the SAME control group with
          the SAME styling as the two mode buttons: it is the third book of the
-         three, it opens its own page, and it must not read as a stray link
+         three, it opens its own separate page, and it must not read as a stray link
          parked outside the control it belongs with. -->
     <div class="modeswitch">
       <button id="modeDry"  class="modebtn on" onclick="setMode('dry')">DRY</button>
       <button id="modeLive" class="modebtn live " onclick="setMode('live')">LIVE</button>
       <button id="noLanesBtn" class="modebtn nolanes on" onclick="toggleNoLanes()">NO LANES ON</button>
-      <a href="#all-no-panel" class="modebtn allno" id="allNoBtn" title="ALL NO MARKETS — NO-side only, maker entries, $250 of its own simulated money">ALL NO</a>
+      <a href="/all-no-markets" class="modebtn allno" id="allNoBtn" title="ALL NO MARKETS — NO-side only, maker entries, $250 of its own simulated money">ALL NO</a>
     </div>
   </div>
   <div class="stamp">Rendered 2026-10-19 11:57:21</div>
@@ -1795,10 +1795,9 @@ button.loading.yellow::after {
   
   setupViewSwitching();
 
-  setInterval(renderNoBook, 3000);
+  // ALL NO MARKETS moved to separate page at /all-no-markets
   setInterval(paintProof, 5000);
   setInterval(paintModeStrip, 4000);
-  renderNoBook();
   paintProof();
   paintModeStrip();
 })();
@@ -3118,53 +3117,9 @@ safeRun(() => paintMode({ mode: SNAPSHOT.mode.mode }), 'paintMode');
 safeRun(refresh, 'refresh');
 safeRun(refreshFeeds, 'refreshFeeds');
 </script>
-  <!-- ALL NO MARKETS section is now integrated into the main dashboard -->
-  <div class="panel all-no-panel">
-    <div class="ph">
-      <h2>ALL NO MARKETS</h2>
-      <span class="note">NO side only, maker entries, read-only &middot; every row below is a *NO* LANE contract entered with a resting limit order at the side's bid</span>
-      <div class="tools">
-        <input id="noFilter" type="text" placeholder="filter market / strategy" onkeyup="filterRows('noFilter','noBody')">
-        <button onclick="clearFilter('noFilter','noBody')">clear</button>
-      </div>
-    </div>
-    <div class="pb">
-      <div class="scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Market</th>
-              <th>Strategy</th>
-              <th>Side</th>
-              <th class="num">Limit entry</th>
-              <th class="num">Qty</th>
-              <th class="num">Cost</th>
-              <th class="num">Model fair</th>
-              <th class="num">Edge</th>
-              <th class="num">Kelly f*</th>
-              <th class="num">Stop</th>
-              <th class="num">Take profit</th>
-              <th class="num">Conf</th>
-              <th>Expiration</th>
-              <th>Status</th>
-              <th>Book</th>
-              <th>Opened (UTC)</th>
-            </tr>
-          </thead>
-          <tbody id="noBody">
-            
-            <tr><td colspan="17" class="empty">No open *NO* LANE positions in this book &mdash; the up/down lanes keep their own clips, and this book has not placed one yet.</td></tr>
-            
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
   <!-- Footer -->
   <footer>
-    <p>Kalshi-Frigo Trading Dashboard &middot; ALL NO MARKETS are integrated into the main dashboard at the bottom</p>
+    <p>Kai-Mirror Trading Dashboard &middot; DRY & LIVE modes · ALL NO MARKETS available at /all-no-markets (separate page)</p>
   </footer>
 </div>
 </body>
