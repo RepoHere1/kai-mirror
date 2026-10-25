@@ -1,4 +1,4 @@
-// Kai-Mirror page injector.
+﻿// Kai-Mirror page injector.
 // Runs inside the dashboard page alongside the app script. It adds ONLY what the
 // served markup was missing and wires real-data panels - it never fabricates data.
 // Every number it renders comes from the local server, which in turn reads the
@@ -152,11 +152,11 @@
       el.innerHTML =
         '<div style="color:#2ee6a8;font-weight:700;margin-bottom:4px">REAL DATA PROOF <span style="color:#5b6a80" id="kaiProofClose">[hide]</span></div>'
         + '<div>kalshi : <b style="color:#e6edf6">' + esc(k.source || '?') + '</b> ' + esc(String(k.host || '').replace('https://', '').slice(0, 34)) + '</div>'
-        + '<div>series : ' + esc(k.series || '') + ' · ' + (k.latency_ms == null ? '-' : k.latency_ms + 'ms') + ' · ' + esc(String(k.fetched_at || '').slice(11, 19)) + 'Z</div>'
+        + '<div>series : ' + esc(k.series || '') + ' Â· ' + (k.latency_ms == null ? '-' : k.latency_ms + 'ms') + ' Â· ' + esc(String(k.fetched_at || '').slice(11, 19)) + 'Z</div>'
         + '<div>key id : <b style="color:#e6edf6">' + esc(String(k.key_id || '').slice(0, 18)) + '</b></div>'
-        + '<div>spot   : <b style="color:#e6edf6">' + esc(s.product || '') + '</b> ' + (s.price == null ? '-' : '$' + Number(s.price).toLocaleString()) + ' · ' + esc(String(s.at || '').slice(11, 19)) + 'Z</div>'
+        + '<div>spot   : <b style="color:#e6edf6">' + esc(s.product || '') + '</b> ' + (s.price == null ? '-' : '$' + Number(s.price).toLocaleString()) + ' Â· ' + esc(String(s.at || '').slice(11, 19)) + 'Z</div>'
         + '<div>source : ' + esc(s.source || '') + '</div>'
-        + '<div>llm    : ' + esc(l.provider || '') + ' · ' + esc(l.model || '') + '</div>'
+        + '<div>llm    : ' + esc(l.provider || '') + ' Â· ' + esc(l.model || '') + '</div>'
         + '<div style="color:#f5c542;margin-top:4px">' + esc(p.dry_execution || '') + '</div>'
         + '<div style="margin-top:4px"><a href="/api/provenance" target="_blank" style="color:#4d9fff;text-decoration:none">raw /api/provenance</a>'
         + ' &middot; <a href="/api/snapshot" target="_blank" style="color:#4d9fff;text-decoration:none">/api/snapshot</a></div>';
@@ -180,77 +180,11 @@
     }
     fetch('/api/health').then(function (r) { return r.json(); }).then(function (d) {
       el.innerHTML = '<b style="color:' + (d.mode === 'live' ? '#ff5555' : '#2ee6a8') + '">' + String(d.mode).toUpperCase() + '</b>'
-        + ' · dry cash <b style="color:#e6edf6">$' + Number(d.dry_balance || 0).toFixed(2) + '</b>'
+        + ' Â· dry cash <b style="color:#e6edf6">$' + Number(d.dry_balance || 0).toFixed(2) + '</b>'
         + '<div style="color:#5b6a80">live ' + esc(String(d.hosts.kalshi_live).replace('https://', '')) + '</div>'
         + '<div style="color:#5b6a80">demo ' + esc(String(d.hosts.kalshi_demo).replace('https://', '')) + ' (fallback)</div>';
     }).catch(function () { });
   }
-
-  // 7. Wire button navigation for DRY/LIVE/ALL NO
-  var dryBtn = $('modeDry');
-  var liveBtn = $('modeLive');
-  var allNoBtn = $('allNoBtn');
-  if (dryBtn) dryBtn.onclick = function(e) { e.preventDefault(); fetch('/api/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'dry' }) }).then(() => { location.pathname = '/'; }); };
-  if (liveBtn) liveBtn.onclick = function(e) { e.preventDefault(); fetch('/api/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: 'live' }) }).then(() => { location.pathname = '/live'; }); };
-  if (allNoBtn) allNoBtn.href = '/all-no-markets';
-
-  // 8. LIVE mode styling - red border and mode indicator
-  function setupLiveMode() {
-    if (document.body.dataset.mode === 'live') {
-      // Inject LIVE warning banner if not exists
-      if (!$('liveWarning')) {
-        var banner = document.createElement('div');
-        banner.id = 'liveWarning';
-        banner.style.cssText = 'background:rgba(161,0,0,.16);border:1px solid rgba(161,0,0,.22);border-radius:14px;padding:12px 14px;margin-bottom:14px;color:#e6edf6;font-weight:500';
-        banner.innerHTML = '<b style="color:#a10000">LIVE MODE — real orders, real money.</b> Every fill below is a real Kalshi trade against the production account. Account balance: <b>$2.81</b>. Every strategy started from here will place real orders until you switch back to DRY.';
-        var wrap = document.querySelector('.wrap');
-        if (wrap) {
-          var header = wrap.querySelector('header');
-          if (header && header.nextSibling) {
-            header.parentNode.insertBefore(banner, header.nextSibling);
-          }
-        }
-      }
-    }
-  }
-  
-  // 9. View switching - show DRY/LIVE/ALL NO based on current pathname
-  function setupViewSwitching() {
-    var path = location.pathname;
-    
-    if (path === '/' || path === '/index.html') {
-      // DRY view - show everything as normal
-      document.body.dataset.view = 'dry';
-    } else if (path === '/live') {
-      // LIVE view - show EVERYTHING with LIVE styling
-      document.body.dataset.view = 'live';
-      document.body.dataset.mode = 'live';
-      setupLiveMode();
-    } else if (path === '/all-no-markets') {
-      // ALL NO MARKETS view - hide all but the ALL NO table
-      document.body.dataset.view = 'allno';
-      setTimeout(function() {
-        var tiles = document.querySelector('.tiles');
-        if (tiles) tiles.style.display = 'none';
-        var panels = document.querySelectorAll('.panel');
-        for (var i = 0; i < panels.length; i++) {
-          var p = panels[i];
-          var h = p.querySelector('h2');
-          if (h && h.textContent.toLowerCase().indexOf('all no') !== -1) {
-            p.style.display = 'block';
-          } else if (h) {
-            p.style.display = 'none';
-          }
-        }
-        var rows = document.querySelectorAll('.row');
-        for (var j = 0; j < rows.length; j++) {
-          rows[j].style.display = 'none';
-        }
-      }, 100);
-    }
-  }
-  
-  setupViewSwitching();
 
   setInterval(renderNoBook, 3000);
   setInterval(paintProof, 5000);
@@ -259,3 +193,4 @@
   paintProof();
   paintModeStrip();
 })();
+

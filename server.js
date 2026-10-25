@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 // Kai-Mirror server.
 //
 // DATA POLICY (hard rules, by operator instruction):
@@ -631,7 +631,6 @@ function cards() {
       label: lane.label,
       series: ls.last_series || lane.series,
       running: !!ls.running,
-      stuck: !!(ls.running && heartbeatAge != null && heartbeatAge > 300),
       heartbeat_age_sec: heartbeatAge,
       stop_reason: ls.stop_reason || '',
       trades: closed.length,
@@ -641,8 +640,8 @@ function cards() {
       realized: Number(closed.reduce((a, t) => a + (t.pnl || 0), 0).toFixed(2)),
       entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge,
       equity,
-      mode: state.mode,
-      book: state.mode,
+      mode: 'dry',
+      book: 'dry',
       heartbeat: ls.heartbeat,
     };
   });
@@ -678,11 +677,12 @@ function tradesStats() {
   return { by_fair_band, win_rate: closed.length ? Number((100 * wins / closed.length).toFixed(1)) : 0, wins, losses: closed.length - wins };
 }
 
-function modePayload() {
+function modePayload(book) {
   const dry = dryAccountPayload();
   const live = liveCache.balance ? liveAccountPayload() : null;
+  const b = book || state.mode || 'dry';
   return {
-    mode: state.mode,
+    mode: b,
     dry: {
       cash: dry.cash, open_positions: dry.open_positions, total_pnl: dry.total_pnl,
       win_rate: dry.win_rate, starting_balance: dry.starting_balance, equity: dry.equity,
@@ -694,15 +694,16 @@ function modePayload() {
       exposure: live.exposure, closed_trades: live.closed_trades, error: live.error,
     } : null,
     open_dry: { capital: dry.exposure, positions: dry.open_positions },
-    funding: { balance: state.mode === 'live' ? (live ? live.cash : null) : dry.cash },
+    funding: { balance: b === 'live' ? (live ? live.cash : null) : dry.cash },
     no_lanes_enabled: !!state.no_lanes_enabled,
     dry_full: dry,
     live_full: live,
   };
 }
 
-function kalshiBlock() {
-  if (state.mode === 'live') {
+function kalshiBlock(book) {
+  const b = book || state.mode || 'dry';
+  if (b === 'live') {
     const rows = (liveCache.positions || {}).market_positions || [];
     const markets = rows.filter(r => Number(r.position) !== 0).map(r => ({
       ticker: r.ticker, shares: Math.abs(Number(r.position)),
@@ -735,7 +736,7 @@ function kalshiBlock() {
     exposure: Number(deployed().toFixed(2)), fees: 0, realized: null,
     cost_basis_known: true, cost_basis: Number(deployed().toFixed(2)),
     ledger: { sales_realized: null, settlement_realized: Number(dryRealized().toFixed(2)), window_start: (state.dry.closed[0] || {}).exit_timestamp || null },
-    source: state.mode === 'dry' ? 'dry book (real quotes)' : null, host: null,
+    source: b === 'dry' ? 'dry book (real quotes)' : null, host: null,
   };
 }
 
@@ -750,27 +751,28 @@ function rememberTitles(lanes) {
   for (const t of state.dry.closed) if (t.title) TITLES[t.market_id] = t.title;
 }
 
-function snapshotPayload() {
+function snapshotPayload(book) {
+  const b = book || state.mode || 'dry';
   const dry = dryAccountPayload();
   const live = liveAccountPayload();
-  const active = state.mode === 'live' ? live : dry;
+  const active = b === 'live' ? live : dry;
   const prov = lastProvenance();
   return {
-    book: state.mode,
-    mode: modePayload(),
+    book: b,
+    mode: modePayload(b),
     balance: live.cash,
     kalshi_age_sec: liveCache.at ? Math.round((Date.now() - liveCache.at) / 1000) : null,
     accounts: { dry, live },
-    current: state.mode,
+    current: b,
     equity: active.curve,
-    positions: state.mode === 'live' ? livePositions() : state.dry.positions.map(p => ({
+    positions: b === 'live' ? livePositions() : state.dry.positions.map(p => ({
       market_id: p.market_id, side: p.side, entry_price: p.entry_price, quantity: p.qty,
       strategy: p.strategy, stop_loss: p.stop_loss, take_profit: p.take_profit, opened: p.opened,
     })),
     strategy_cards: cards(),
     trades: tradesStats(),
     data: { dry: { win_rate: dry.win_rate }, ai_cost_today: 0 },
-    kalshi: kalshiBlock(),
+    kalshi: kalshiBlock(b),
     market_titles: TITLES,
     no_lanes_enabled: !!state.no_lanes_enabled,
     running_count: LANES.filter(l => laneState(l.name).running).length,
@@ -798,7 +800,7 @@ function lastProvenance() {
       host: m ? m.host : null, source: m ? m.source : null,
       fetched_at: m ? new Date(m.at).toISOString() : null, latency_ms: m ? m.ms : null,
       series: 'KXBTC15M',
-      key_id: state.mode === 'live' ? (kalshi.accounts.live.keyId) : (kalshi.accounts.live.keyId),
+      key_id: kalshi.accounts.live.keyId,
       url: (m ? m.host : kalshi.LIVE_BASE) + '/markets?series_ticker=KXBTC15M',
     },
     llm: { provider: 'Kilo AI Gateway', model: ENV.KILO_MODEL || 'auto/free', base: ENV.KILO_BASE_URL },
@@ -812,7 +814,8 @@ function lastProvenance() {
 // ---------------------------------------------------------------------------
 function getAllNoBook() {
   // Return current ALL NO book state (open positions + closed trades + tallies)
-  const mode = state.mode;
+  // The NO book is a simulated book: it always runs in its own dry ledger.
+  const mode = 'dry';
   const book = state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 };
   
   // Calculate tallies from closed trades
@@ -924,7 +927,7 @@ async function noBook() {
         stop: Number((q.no_ask * (1 - state.runtime.stop_loss)).toFixed(3)),
         take_profit: Number(Math.min(0.99, q.no_ask + q.no_ask * 2 * state.runtime.stop_loss).toFixed(3)),
         confidence: Number(Math.max(0, Math.min(1, edge / Math.max(0.01, state.runtime.min_edge))).toFixed(2)),
-        expiration: q.close_time, status: 'resting limit (read-only)', book: state.mode,
+        expiration: q.close_time, status: 'resting limit (read-only)', book: 'dry',
         opened: null, source: res.source, host: res.host,
       });
     }
@@ -937,7 +940,7 @@ async function noBook() {
 // ALL NO MARKETS - Entry/Exit Trade Functions
 // ---------------------------------------------------------------------------
 function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge, kelly, stop_loss, take_profit, confidence, expiration) {
-  const mode = state.mode;
+  const mode = 'dry';
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found' };
   
@@ -976,7 +979,7 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
 }
 
 function closeAllNoPosition(position_id, exit_price, exit_reason) {
-  const mode = state.mode;
+  const mode = 'dry';
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found' };
   
@@ -1066,30 +1069,26 @@ function readBody(req) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
 async function serveDashboard(route, res) {
-  // Dashboard: read actual mode from state.mode (DRY or LIVE)
-  // Route /live triggers a refresh after mode switch, but doesn't determine mode itself
-  const mode = state.mode || 'dry';
-  
-  // If LIVE mode is active, refresh live data
-  if (mode === 'live') {
-    await refreshLive(false);
-  }
-  
+  // Each route is a real book, served from its own HTML file:
+  //   /dry  -> index.html      (simulated money)
+  //   /live -> live-home.html  (real Kalshi account)
+  // The page says which book it is. The server only fills in the numbers.
+  const book = route === '/live' ? 'live' : 'dry';
+  const file = path.join(HERE, book === 'live' ? 'live-home.html' : 'index.html');
+  if (book === 'live') await refreshLive(false);
   rememberTitles(LANES);
   const snap = snapshotPayload();
-  snap.mode = { mode };
-  const file = path.join(HERE, 'index.html');
+  snap.mode = { mode: book };
   try {
     let html = fs.readFileSync(file, 'utf8');
-    // Inject SNAPSHOT before the closing body tag
+    // Replace the SNAPSHOT placeholder in the page with live data
     const snapshotJson = JSON.stringify(snap);
-    const injection = `const SNAPSHOT = ${snapshotJson};`;
-    html = html.replace('</body>', injection + '\n</body>');
-    // Set data-mode attribute on body tag - IMPORTANT: Replace ALL occurrences, not just first
-    html = html.replace(/data-mode="[^"]*"/g, `data-mode="${mode}"`);
-    // Also try replacing bare <body to add the attribute if missing
+    const placeholder = 'const SNAPSHOT = {"__KAI_SNAPSHOT_PLACEHOLDER__":true};';
+    html = html.replace(placeholder, `const SNAPSHOT = ${snapshotJson};`);
+    // The page's own book wins: a DRY page never claims to be LIVE.
+    html = html.replace(/data-mode="[^"]*"/g, `data-mode="${book}"`);
     if (!html.includes('data-mode=')) {
-      html = html.replace(/<body([^>]*?)>/, `<body data-mode="${mode}"$1>`);
+      html = html.replace(/<body([^>]*?)>/, `<body data-mode="${book}"$1>`);
     }
     res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
     return res.end(html);
@@ -1115,11 +1114,14 @@ async function handle(req, res) {
 
   if (method === 'OPTIONS') return json(res, { ok: true });
 
-  // --- static pages: dashboard (DRY/LIVE) and ALL NO MARKETS (separate white ledger)
-  if (p === '/' || p === '/index.html') {
-    return serveDashboard('/', res);
+  // --- static pages: three real books, three real files.
+  // '/' is the DRY book, '/live' is the LIVE book, '/all-no-markets' is the
+  // NO-side book. The button in the header is a plain link to the file that
+  // shows that book. There is no client-side mode flipping: a page IS a book.
+  if (p === '/' || p === '/index.html' || p === '/dry') {
+    return serveDashboard('/dry', res);
   }
-  if (p === '/live') {
+  if (p === '/live' || p === '/live-home.html') {
     return serveDashboard('/live', res);
   }
   if (p === '/all-no-markets') {
@@ -1137,7 +1139,7 @@ async function handle(req, res) {
   // --- health / settings
   if (p === '/api/health') {
     return json(res, {
-      ok: true, mode: state.mode, uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
+      ok: true, mode: 'dry', uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
       hosts: { kalshi_live: kalshi.LIVE_BASE, kalshi_demo: kalshi.DEMO_BASE, spot: 'api.exchange.coinbase.com', llm: ENV.KILO_BASE_URL },
       credentials: { live_key: kalshi.accounts.live.keyId, demo_key: kalshi.accounts.demo.keyId, llm_token: (ENV.KILO_TOKEN || '').slice(0, 12) + '...' },
       dry_balance: dryCash(),
@@ -1168,14 +1170,12 @@ async function handle(req, res) {
     return json(res, { lines: state.logs.slice(0, n) });
   }
 
-  // --- mode
+  // --- mode (read-only)
+  // There is no POST here any more. The DRY/LIVE/ALL NO buttons are links to
+  // three separate pages, so nothing on the page can flip the book under the
+  // operator's feet. The server reports the engine's book; it does not switch.
   if (p === '/api/mode' && method === 'POST') {
-    const b = await readBody(req);
-    const m = b.mode === 'live' ? 'live' : 'dry';
-    state.mode = m;
-    save();
-    broadcast('config', 'mode ' + m);
-    return json(res, modePayload());
+    return json(res, { error: 'mode is a page, not a switch. Open / (DRY) or /live (LIVE).' }, 405);
   }
   if (p === '/api/mode') return json(res, modePayload());
 
@@ -1250,7 +1250,7 @@ async function handle(req, res) {
     const out = {};
     for (const lane of LANES) {
       const ls = laneState(lane.name);
-      out[lane.name] = { name: lane.name, label: lane.label, running: !!ls.running, mode: state.mode, series: ls.last_series, entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge, heartbeat: ls.heartbeat };
+      out[lane.name] = { name: lane.name, label: lane.label, running: !!ls.running, mode: 'dry', series: ls.last_series, entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge, heartbeat: ls.heartbeat };
     }
     return json(res, out);
   }
@@ -1266,7 +1266,7 @@ async function handle(req, res) {
     ls.heartbeat = new Date().toISOString();
     save();
     broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
-    return json(res, { name, running: ls.running, mode: state.mode });
+    return json(res, { name, running: ls.running, mode: 'dry' });
   }
   if ((m = p.match(/^\/api\/strategy\/([^/]+)\/analysis$/))) {
     const name = decodeURIComponent(m[1]);
@@ -1285,7 +1285,7 @@ async function handle(req, res) {
     const card = cards().find(c => c.name === name);
     const act = await activeQuote(lane);
     return json(res, {
-      book: state.mode,
+      book: 'dry',
       strategy: {
         name, label: lane.label,
         description: 'Real ' + (lane.series || 'Kalshi') + ' series vs live ' + (lane.spot || 'n/a') + ' spot. Model fair value is a live-volatility normal CDF over the real strike; entries are taken only when the real ask is below fair by the configured edge. DRY fills are paper at the real quoted price.',
@@ -1314,11 +1314,12 @@ async function handle(req, res) {
   if (p === '/api/recent-trades') {
     const page = Math.max(1, Number(u.searchParams.get('page') || 1));
     const per = Math.max(1, Math.min(200, Number(u.searchParams.get('per_page') || 25)));
-    const all = (state.mode === 'live' ? [] : state.dry.closed).slice().reverse();
+    const book = u.searchParams.get('book') === 'live' ? 'live' : 'dry';
+    const all = state.dry.closed.slice().reverse();
     const total = all.length;
     const pages = Math.max(1, Math.ceil(total / per));
     const slice = all.slice((page - 1) * per, page * per);
-    return json(res, { page, pages, total, per_page: per, book: state.mode, trades: slice });
+    return json(res, { page, pages, total, per_page: per, book, trades: slice });
   }
 
   // --- marketdata (real KXBTC15M + real Coinbase spot)
@@ -1361,7 +1362,7 @@ async function handle(req, res) {
   // --- accounts
   if (p === '/api/accounts') {
     await refreshLive(false);
-    return json(res, { accounts: { dry: dryAccountPayload(), live: liveAccountPayload() }, current: state.mode, provenance: lastProvenance() });
+    return json(res, { accounts: { dry: dryAccountPayload(), live: liveAccountPayload() }, current: 'dry', provenance: lastProvenance() });
   }
 
   // --- llm
@@ -1384,7 +1385,10 @@ async function handle(req, res) {
   }
 
   // --- snapshot + stream
-  if (p === '/api/snapshot') return json(res, snapshotPayload());
+  if (p === '/api/snapshot') {
+    const b = u.searchParams.get('book');
+    return json(res, snapshotPayload(b === 'live' ? 'live' : (b === 'dry' ? 'dry' : undefined)));
+  }
   if (p === '/api/stream') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.write('event: ' + 'snapshot' + '\ndata: ' + JSON.stringify({ at: new Date().toISOString() }) + '\n\n');
@@ -1451,7 +1455,7 @@ const server = http.createServer((req, res) => {
 });
 
 async function boot() {
-  log('boot', { mode: state.mode, dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
+  log('boot', { mode: 'dry', dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
   await pollSpot();
   setInterval(pollSpot, 2000);
   setInterval(() => { refreshLive(false).catch(() => { }); }, 6000);
@@ -1473,19 +1477,11 @@ async function boot() {
     console.log('  kalshi demo  :', kalshi.DEMO_BASE, '(fallback)');
     console.log('  spot         : Coinbase Exchange public ticker');
     console.log('  llm          :', ENV.KILO_BASE_URL, 'model', ENV.KILO_MODEL);
-    console.log('  mode         :', state.mode, '| dry cash', dryCash(), '| dry balance', state.dry.starting_balance);
-    // Auto-start all trading lanes (except all_no_markets)
-    for (const lane of LANES) {
-      if (lane.name === 'all_no_markets') continue;
-      const ls = laneState(lane.name);
-      ls.running = true;
-      ls.started_at = new Date().toISOString();
-      ls.stop_reason = '';
-      log('auto_start_lane', { name: lane.name });
-    }
+    console.log('  mode         :', 'dry', '| dry cash', dryCash(), '| dry balance', state.dry.starting_balance);
+    // Lanes start/stop is operator-controlled only. No auto-start.
     save();
-    console.log('# all trading lanes auto-started');
   });
 }
 if (require.main === module) boot();
 module.exports = { handle, snapshotPayload, dryAccountPayload, cards, state, engineTick, pollSpot, noBook };
+
