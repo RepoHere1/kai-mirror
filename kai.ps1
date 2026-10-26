@@ -125,6 +125,19 @@ function Set-Lanes([bool]$want) {
   Write-Host (($(if ($want) { 'started' } else { 'stopped' })) + ' ' + $changed + ' lane(s)') -ForegroundColor Green
 }
 
+function Set-Lanes-Live {
+  $h = Test-KaiPort
+  if (-not $h) { Write-Host 'server is down - run: .\kai.ps1 start' -ForegroundColor Red; return }
+  # Switch engine to LIVE mode
+  $modeResp = Invoke-WebRequest -Uri ($Base + '/api/mode') -Method POST -UseBasicParsing -TimeoutSec 5 `
+    -ContentType 'application/json' -Body '{"mode":"live"}'
+  $modeData = $modeResp.Content | ConvertFrom-Json
+  if (-not $modeData.ok) { Write-Host 'mode switch failed: ' + $modeData.error -ForegroundColor Red; return }
+  Write-Host 'engine switched to LIVE mode' -ForegroundColor Cyan
+  # Start all stopped lanes
+  Set-Lanes $true
+}
+
 switch ($Action.ToLower()) {
   'start'   { Start-Kai }
   'stop'    { Stop-Kai }
@@ -132,7 +145,8 @@ switch ($Action.ToLower()) {
   'status'  { Show-Status }
   'reset'   { Reset-Dry }
   'on'      { Set-Lanes $true }
+  'onlive'  { Set-Lanes-Live }
   'off'     { Set-Lanes $false }
   'logs'    { if (Test-Path $LogFile) { Get-Content $LogFile -Tail 40 } else { Write-Host 'no log yet' } }
-  default   { Write-Host 'usage: .\kai.ps1 [start|stop|restart|status|reset|on|off|logs]' }
+  'default' { Write-Host 'usage: .\kai.ps1 [start|stop|restart|status|reset|on|onlive|off|logs]' }
 }

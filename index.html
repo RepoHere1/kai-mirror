@@ -466,9 +466,10 @@ button.loading.yellow::after {
     <h2>Strategies</h2>
     <span class="note">click a card for everything about that strategy</span>
     <span class="bar">
-      <button id="startAllBtn" onclick="startAll()">Start all in DRY</button>
-      <button onclick="stopAll()">Stop all</button>
-    </span>
+           <button id="startAllBtn" onclick="startAll()">Start all in DRY</button>
+           <button id="startAllLiveBtn" onclick="startAllLive()">Start all in LIVE</button>
+           <button onclick="stopAll()">Stop all</button>
+         </span>
   </div>
   <div class="pb">
     <div class="cards">
@@ -2840,6 +2841,48 @@ async function startAll() {
       btn.classList.remove('loading');
       btn.classList.remove('yellow');
     }
+  }
+}
+
+async function startAllLive() {
+  const btn = document.getElementById('startAllLiveBtn');
+  if (btn) { btn.classList.add('loading'); btn.classList.add('yellow'); }
+  
+  try {
+    // 1. Switch engine to LIVE mode
+    const modeResp = await fetch('/api/mode', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ mode: 'live' })
+    });
+    const modeData = await modeResp.json().catch(() => ({}));
+    if (!modeResp.ok) {
+      note('mode switch failed: ' + (modeData.error || 'unknown'));
+      return;
+    }
+    note('engine switched to LIVE mode');
+    
+    // 2. Start all stopped lanes
+    const names = (SNAPSHOT.strategy_cards || []).filter(c => !c.running).map(c => c.name);
+    if (!names.length) {
+      note('all lanes already running');
+      return;
+    }
+    
+    for (const n of names) await toggleStrategy(n, true);
+    
+    // Poll until all are running
+    let pollCount = 0;
+    while (pollCount < 120) {
+      await new Promise(r => setTimeout(r, 500));
+      pollCount++;
+      try {
+        const s = await (await fetch('/api/strategies', { headers: authHeaders() })).json().catch(() => ({}));
+        if (names.every(n => s[n] && s[n].running)) { note('LIVE started: ' + names.join(', ')); break; }
+      } catch (e) {}
+    }
+  } finally {
+    if (btn) { btn.classList.remove('loading'); btn.classList.remove('yellow'); }
   }
 }
 
