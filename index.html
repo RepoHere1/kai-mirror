@@ -2257,16 +2257,11 @@ async function toggleStrategy(name, quiet) {
   if (btn) btn.classList.add('loading');
   
   try {
-    let r;
-    if (card && card.running) {
-      r = await fetch('/api/strategy/' + encodeURIComponent(name) + '/toggle', {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
-      });
-    } else {
-      r = await fetch('/api/strategy/' + encodeURIComponent(name) + '/toggle', {
-        method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
-      });
-    }
+    // Send explicit desired state so the server doesn't just toggle
+    body.running = wantedRunning;
+    let r = await fetch('/api/strategy/' + encodeURIComponent(name) + '/toggle', {
+      method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
+    });
 
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.error) {
