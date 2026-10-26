@@ -1918,6 +1918,34 @@ function paint(s) {
   // realized P&L into the DRY tiles ten seconds after load - the page
   // contradicting its own DRY MODE flag. Live ids do not exist in DRY and vice
   // versa, so each write is a no-op in the other mode rather than a leak.
+
+  // --- DRY headline tiles: always updated from the DRY book ---
+  const dry = s.accounts && s.accounts.dry || {};
+  const setDry = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  setDry('dCashTile', money(dry.cash || 0));
+  setDry('dWinRate', (dry.win_rate || 0) + '%');
+  setDry('dWinRateNote', (dry.closed_trades || 0) + ' closed trades');
+  setDry('dPosTile', dry.open_positions || 0);
+  setDry('dDepTile', money(dry.exposure || 0));
+  setDry('dRealTile', money(dry.realized || 0));
+  const dRealSub = $('dRealTile');
+  if (dRealSub && dRealSub.parentNode) {
+    var sub = dRealSub.parentNode.querySelector('.s');
+    if (sub) sub.textContent = 'since reset · realized ' + money(dry.realized || 0) + ' · ' + (dry.win_rate || 0) + '% win rate';
+  }
+  const dStratLive = $('dStratLive');
+  if (dStratLive) {
+    const running = (s.strategy_cards || []).filter(c => c.running).length;
+    dStratLive.textContent = running + ' of ' + (s.strategy_cards || []).length + ' available';
+  }
+  const dPnlTile = $('dPnlTile');
+  if (dPnlTile) dPnlTile.textContent = money((dry.total_pnl || 0));
+  const dCashSub = $('dCashTile');
+  if (dCashSub && dCashSub.parentNode) {
+    var sub2 = dCashSub.parentNode.querySelector('.s');
+    if (sub2) sub2.textContent = 'of $' + (dry.starting_balance || 0).toFixed(2) + ' simulated baseline · derived from the book\'s own rows';
+  }
+
   if (s.mode && s.mode.mode === 'live') {
     set('tBalance', s.balance == null ? '-' : money(s.balance));
     // Freshness truth under the balance: a number with no age is how a dead
