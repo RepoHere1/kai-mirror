@@ -492,7 +492,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-btc_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-btc_updown" onclick="toggleStrategy('btc_updown')">Stop</button>
+             <button id="btn-btc_updown" onclick="toggleStrategy('btc_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('btc_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -516,7 +516,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-btc_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-btc_1h_updown" onclick="toggleStrategy('btc_1h_updown')">Stop</button>
+             <button id="btn-btc_1h_updown" onclick="toggleStrategy('btc_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('btc_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -540,7 +540,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-eth_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-eth_updown" onclick="toggleStrategy('eth_updown')">Stop</button>
+             <button id="btn-eth_updown" onclick="toggleStrategy('eth_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('eth_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -564,7 +564,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-eth_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-eth_1h_updown" onclick="toggleStrategy('eth_1h_updown')">Stop</button>
+             <button id="btn-eth_1h_updown" onclick="toggleStrategy('eth_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('eth_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -588,7 +588,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-hyperliquid_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-hyperliquid_updown" onclick="toggleStrategy('hyperliquid_updown')">Stop</button>
+             <button id="btn-hyperliquid_updown" onclick="toggleStrategy('hyperliquid_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('hyperliquid_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -612,7 +612,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-hyperliquid_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-hyperliquid_1h_updown" onclick="toggleStrategy('hyperliquid_1h_updown')">Stop</button>
+             <button id="btn-hyperliquid_1h_updown" onclick="toggleStrategy('hyperliquid_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('hyperliquid_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -636,7 +636,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-xrp_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-xrp_updown" onclick="toggleStrategy('xrp_updown')">Stop</button>
+             <button id="btn-xrp_updown" onclick="toggleStrategy('xrp_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('xrp_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -660,7 +660,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-xrp_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-xrp_1h_updown" onclick="toggleStrategy('xrp_1h_updown')">Stop</button>
+             <button id="btn-xrp_1h_updown" onclick="toggleStrategy('xrp_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('xrp_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -684,7 +684,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-all_no_markets-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-all_no_markets" onclick="toggleStrategy('all_no_markets')">Stop</button>
+             <button id="btn-all_no_markets" onclick="toggleStrategy('all_no_markets', false, this.textContent.trim() === 'Start')">Stop</button>
              <button onclick="showAnalysis('all_no_markets')">ANALYSIS OF</button>
            </span>
          </div>
@@ -2247,20 +2247,25 @@ async function resetDry() {
 }
 
 // --- controls ---
-async function toggleStrategy(name, quiet) {
-  const card = (SNAPSHOT.strategy_cards || []).find(c => c.name === name);
+async function toggleStrategy(name, quiet, desiredState) {
   const btn = document.getElementById('btn-' + name);
-  const body = {};
-  const wantedRunning = !!card && !card.running; // true if we're starting, false if stopping
-  
+  // desiredState is the caller's explicit intent: true=start, false=stop.
+  // If not provided, infer from the snapshot (single-button behaviour).
+  let wantedRunning;
+  if (typeof desiredState === 'boolean') {
+    wantedRunning = desiredState;
+  } else {
+    const card = (SNAPSHOT.strategy_cards || []).find(c => c.name === name);
+    wantedRunning = !!card && !card.running;
+  }
+
   // Add loading animation to button - keep it spinning until state actually changes
   if (btn) btn.classList.add('loading');
-  
+
   try {
     // Send explicit desired state so the server doesn't just toggle
-    body.running = wantedRunning;
     let r = await fetch('/api/strategy/' + encodeURIComponent(name) + '/toggle', {
-      method: 'POST', headers: authHeaders(), body: JSON.stringify(body),
+      method: 'POST', headers: authHeaders(), body: JSON.stringify({ running: wantedRunning }),
     });
 
     const d = await r.json().catch(() => ({}));
@@ -2273,57 +2278,42 @@ async function toggleStrategy(name, quiet) {
       return;
     }
     if (!quiet) note(name + ': ' + (wantedRunning ? 'start accepted' : 'stop accepted'));
-    
+
     // Poll for actual state change - keep spinner on until running status matches what we want
-    let maxWait = 120; // Max 120 seconds of polling (increased from 60)
+    let maxWait = 120;
     let pollCount = 0;
-    let lastChartRunning = null;
-    
+
     while (pollCount < maxWait) {
-      // Faster initial polling (200ms), then back off
       const delayMs = pollCount < 10 ? 200 : 500;
       await new Promise(r => setTimeout(r, delayMs));
       pollCount++;
-      
+
       try {
-        // Poll both strategies API AND snapshot to double-check state
         const strategiesResp = await fetch('/api/strategies', { headers: authHeaders() });
         const strategiesData = await strategiesResp.json().catch(() => ({}));
         const strategyData = strategiesData[name];
-        
-        // Also check if the chart visually shows change (via snapshot)
+
         const snapshotResp = await fetch('/api/snapshot', { headers: authHeaders() });
         const snapshot = await snapshotResp.json().catch(() => ({}));
         const cards = snapshot.strategy_cards || [];
         const card = cards.find(c => c.name === name);
-        
-        // Wait for BOTH API and chart to show the desired state
+
         const apiReady = strategyData && strategyData.running === wantedRunning;
         const chartReady = card && card.running === wantedRunning;
-        
+
         if (apiReady && chartReady) {
-          // Both API and chart confirm the state - stop spinning
           if (!quiet) {
             note(name + ': ' + (wantedRunning ? 'started successfully' : 'stopped successfully'));
           }
           break;
         }
-        
-        // If API says running but chart doesn't yet, keep waiting (DB sync lag)
-        // If chart says running but API doesn't, keep waiting (API lag)
-        // This ensures we don't return until visual confirmation
-        
-      } catch (e) {
-        // Poll error - keep trying, don't give up
-      }
+      } catch (e) {}
     }
-    
-    // If we exit the loop without visual confirmation, log a warning
+
     if (pollCount >= maxWait && btn) {
       note(name + ': Timeout waiting for state change. Check the strategy chart.');
     }
   } finally {
-    // Remove loading animation only after state change confirmed
     if (btn) btn.classList.remove('loading');
     refresh();
   }
@@ -2839,7 +2829,7 @@ async function startAll() {
     }
     
     // Start the stopped strategies
-    for (const n of names) await toggleStrategy(n, true);
+    for (const n of names) await toggleStrategy(n, true, true);
     
     // Poll until all are actually running
     let maxWait = 120; // 60 seconds
@@ -2892,7 +2882,7 @@ async function startAllLive() {
       return;
     }
     
-    for (const n of names) await toggleStrategy(n, true);
+    for (const n of names) await toggleStrategy(n, true, true);
     
     // Poll until all are running
     let pollCount = 0;
@@ -2924,7 +2914,7 @@ async function stopAll() {
   }
   
   try {
-    for (const n of names) await toggleStrategy(n, true);
+    for (const n of names) await toggleStrategy(n, true, false);
     
     // Poll until all are actually stopped
     let maxWait = 120;
