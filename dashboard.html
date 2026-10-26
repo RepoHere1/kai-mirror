@@ -1555,7 +1555,7 @@ button.loading.yellow::after {
   // 1. file:// guard - /api/* only exists on the local server
   // ---------------------------------------------------------------------
   if (location.protocol === 'file:') {
-    var url = 'http://127.0.0.1:8787/';
+    var url = window.location.origin + '/';  // Dynamic: self-aware
     var bar = document.createElement('div');
     bar.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0b0f14;color:#e6edf6;'
       + 'font:600 15px/1.6 system-ui,Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;text-align:center;padding:40px';

@@ -20,6 +20,7 @@ $PidFile = Join-Path $Here 'kai.pid'
 $LogFile = Join-Path $Here 'server.log'
 $ErrFile = Join-Path $Here 'server.err'
 $Base    = 'http://127.0.0.1:8787'
+$Mode    = 'DRY'
 $Node    = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $Node) { $Node = 'C:\Program Files\nodejs\node.exe' }
 
@@ -43,7 +44,7 @@ function Test-KaiPort {
 function Start-Kai {
   if (Get-KaiProcess) { Write-Host 'already running (pid ' + (Get-KaiProcess).Id + ')' -ForegroundColor Yellow; return }
   if (Test-KaiPort) { Write-Host 'a Kai-Mirror server is already answering on ' + $Base -ForegroundColor Yellow; return }
-  Write-Host 'starting Kai-Mirror...' -ForegroundColor Cyan
+  Write-Host 'starting Kai-Mirror (DRY, port 8787)...' -ForegroundColor Cyan
   $p = Start-Process -FilePath $Node -ArgumentList 'server.js' -WorkingDirectory $Here `
     -WindowStyle Hidden -PassThru -RedirectStandardOutput $LogFile -RedirectStandardError $ErrFile
   Set-Content -Path $PidFile -Value $p.Id -Encoding ascii
@@ -51,7 +52,7 @@ function Start-Kai {
     Start-Sleep -Milliseconds 500
     $h = Test-KaiPort
     if ($h) {
-      Write-Host ('up  pid ' + $p.Id + '  mode ' + $h.mode + '  dry cash $' + [Math]::Round($h.dry_balance, 2)) -ForegroundColor Green
+      Write-Host ('✓ DRY  pid ' + $p.Id + '  cash $' + [Math]::Round($h.dry_balance, 2)) -ForegroundColor Green
       Write-Host ('open  ' + $Base + '/') -ForegroundColor Green
       return
     }
@@ -68,8 +69,7 @@ function Start-Kai {
 function Stop-Kai {
   $p = Get-KaiProcess
   if (-not $p) { Write-Host 'not running' -ForegroundColor Yellow; Remove-Item $PidFile -ErrorAction SilentlyContinue; return }
-  Write-Host ('stopping pid ' + $p.Id) -ForegroundColor Cyan
-  # kill the whole tree so no node child survives
+  Write-Host ('stopping Kai-Mirror DRY pid ' + $p.Id) -ForegroundColor Cyan
   & taskkill.exe /PID $p.Id /T /F | Out-Null
   Start-Sleep -Milliseconds 800
   $left = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
@@ -82,12 +82,10 @@ function Show-Status {
   $h = Test-KaiPort
   $p = Get-KaiProcess
   if (-not $h) { Write-Host 'DOWN' -ForegroundColor Red; if ($p) { Write-Host ('stale pid file: ' + $p.Id) }; return }
-  Write-Host 'UP' -ForegroundColor Green
+  Write-Host 'UP (DRY mode, port 8787)' -ForegroundColor Green
   Write-Host ('  pid        : ' + $(if ($p) { $p.Id } else { '(not tracked)' }))
-  Write-Host ('  mode       : ' + $h.mode)
   Write-Host ('  dry cash   : $' + [Math]::Round($h.dry_balance, 2))
-  Write-Host ('  kalshi live: ' + $h.hosts.kalshi_live)
-  Write-Host ('  kalshi demo: ' + $h.hosts.kalshi_demo + '  (fallback)')
+  Write-Host ('  kalshi     : ' + $h.hosts.kalshi_live + ' (live), ' + $h.hosts.kalshi_demo + ' (fallback)')
   Write-Host ('  spot       : ' + $h.hosts.spot)
   Write-Host ('  llm        : ' + $h.hosts.llm)
   Write-Host ('  uptime     : ' + [Math]::Round($h.uptime_sec / 60, 1) + ' min')
@@ -112,7 +110,7 @@ function Reset-Dry {
 
 function Set-Lanes([bool]$want) {
   $h = Test-KaiPort
-  if (-not $h) { Write-Host 'server is down - run: .\kai.ps1 start' -ForegroundColor Red; return }
+  if (-not $h) { Write-Host 'DRY server is down - run: .\kai.ps1 start' -ForegroundColor Red; return }
   $s = (Invoke-WebRequest -Uri ($Base + '/api/strategies') -UseBasicParsing -TimeoutSec 5).Content | ConvertFrom-Json
   $changed = 0
   foreach ($prop in $s.PSObject.Properties) {
@@ -122,20 +120,7 @@ function Set-Lanes([bool]$want) {
       $changed++
     }
   }
-  Write-Host (($(if ($want) { 'started' } else { 'stopped' })) + ' ' + $changed + ' lane(s)') -ForegroundColor Green
-}
-
-function Set-Lanes-Live {
-  $h = Test-KaiPort
-  if (-not $h) { Write-Host 'server is down - run: .\kai.ps1 start' -ForegroundColor Red; return }
-  # Switch engine to LIVE mode
-  $modeResp = Invoke-WebRequest -Uri ($Base + '/api/mode') -Method POST -UseBasicParsing -TimeoutSec 5 `
-    -ContentType 'application/json' -Body '{"mode":"live"}'
-  $modeData = $modeResp.Content | ConvertFrom-Json
-  if (-not $modeData.ok) { Write-Host 'mode switch failed: ' + $modeData.error -ForegroundColor Red; return }
-  Write-Host 'engine switched to LIVE mode' -ForegroundColor Cyan
-  # Start all stopped lanes
-  Set-Lanes $true
+  Write-Host (($(if ($want) { 'started' } else { 'stopped' })) + ' ' + $changed + ' lane(s) in DRY mode') -ForegroundColor Green
 }
 
 switch ($Action.ToLower()) {
