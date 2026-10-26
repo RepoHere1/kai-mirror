@@ -19,7 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');
-const brain = require('./brain');
+const brain = require('./brain_dry');
 
 const HERE = __dirname;
 const ENV = kalshi.ENV;
@@ -64,7 +64,6 @@ function defaultState() {
     signal_weights: brain.signalStats(),
     signal_outcomes: [],
     lanes: {},
-    live: { positions: [], closed: [], balance: 0, starting_balance: 0, entries: 0, running: false },
     alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
     logs: [],
     booted_at: new Date().toISOString(),
@@ -705,8 +704,7 @@ function tradesStats() {
 
 function modePayload(book) {
   const dry = dryAccountPayload();
-  const live = dryCache.balance ? dryAccountPayload() : null;
-  const b = book || state.mode || 'dry';
+  const b = 'dry';  // Kai-Mirror is DRY-only: the mode never changes.
   return {
     mode: b,
     dry: {
@@ -714,16 +712,10 @@ function modePayload(book) {
       win_rate: dry.win_rate, starting_balance: dry.starting_balance, equity: dry.equity,
       realized: dry.realized, exposure: dry.exposure, closed_trades: dry.closed_trades,
     },
-    live: live ? {
-      cash: live.cash, open_positions: live.open_positions, total_pnl: live.total_pnl,
-      portfolio_value: live.portfolio_value, equity: live.equity, realized: live.realized,
-      exposure: live.exposure, closed_trades: live.closed_trades, error: live.error,
-    } : null,
     open_dry: { capital: dry.exposure, positions: dry.open_positions },
-    funding: { balance: b === 'live' ? (live ? live.cash : null) : dry.cash },
+    funding: { balance: dry.cash },
     no_lanes_enabled: !!state.no_lanes_enabled,
     dry_full: dry,
-    live_full: live,
   };
 }
 
@@ -778,20 +770,18 @@ function rememberTitles(lanes) {
 }
 
 function snapshotPayload(book) {
-  const b = book || state.mode || 'dry';
+  const b = 'dry';  // Kai-Mirror is DRY-only: the mode never changes.
   const dry = dryAccountPayload();
-  const live = dryAccountPayload();
-  const active = b === 'live' ? live : dry;
   const prov = lastProvenance();
   return {
     book: b,
     mode: modePayload(b),
-    balance: live.cash,
+    balance: dry.cash,
     kalshi_age_sec: dryCache.at ? Math.round((Date.now() - dryCache.at) / 1000) : null,
-    accounts: { dry, live },
+    accounts: { dry },
     current: b,
-    equity: active.curve,
-    positions: b === 'live' ? dryPositions() : state.dry.positions.map(p => ({
+    equity: dry.curve,
+    positions: state.dry.positions.map(p => ({
       market_id: p.market_id, side: p.side, entry_price: p.entry_price, quantity: p.qty,
       strategy: p.strategy, stop_loss: p.stop_loss, take_profit: p.take_profit, opened: p.opened,
     })),
@@ -1095,12 +1085,11 @@ function readBody(req) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
 async function serveDashboard(route, res) {
-  // Each route is a real book, served from its own HTML file:
-  //   /dry  -> index.html      (simulated money)
-  //   /live -> live-home.html  (real Kalshi account)
-  // The page says which book it is. The server only fills in the numbers.
-  const book = route === '/live' ? 'live' : 'dry';
-  const file = path.join(HERE, book === 'live' ? 'live-home.html' : 'index.html');
+  // Kai-Mirror serves exactly one dashboard: index.html (the simulated DRY
+  // book). The page says which book it is. The server only fills in the
+  // numbers.
+  const book = 'dry';
+  const file = path.join(HERE, 'index.html');
   if (book === 'live') await refreshDry(false);
   rememberTitles(LANES);
   const snap = snapshotPayload();
@@ -1143,14 +1132,11 @@ async function handle(req, res) {
   if (method === 'OPTIONS') return json(res, { ok: true });
 
   // --- static pages: three real books, three real files.
-  // '/' is the DRY book, '/live' is the LIVE book, '/all-no-markets' is the
-  // NO-side book. The button in the header is a plain link to the file that
-  // shows that book. There is no client-side mode flipping: a page IS a book.
+  // '/' is the DRY book - the ONLY book on Kai-Mirror - and '/all-no-markets'
+  // is the NO-side book. There is no LIVE page on this server and no
+  // client-side mode flipping: a page IS a book.
   if (p === '/' || p === '/index.html' || p === '/dry') {
     return serveDashboard('/dry', res);
-  }
-  if (p === '/live' || p === '/live-home.html') {
-    return serveDashboard('/live', res);
   }
   if (p === '/all-no-markets') {
     return serveAllNoMarkets(res);
@@ -1198,23 +1184,11 @@ async function handle(req, res) {
     return json(res, { lines: state.logs.slice(0, n) });
   }
 
-  // --- mode switch (operator-controlled only)
-  // POST /api/mode with { mode: 'dry' | 'live' } flips the engine's book.
-  // This is the ONLY way the engine switches between DRY and LIVE execution.
+  // --- mode: FIXED. Kai-Mirror is the DRY-only server. There is no mode
+  // switch and no live book. Any attempt to flip modes is refused: live
+  // trading lives on the separate Kai-LIVE server (port 8788).
   if (p === '/api/mode' && method === 'POST') {
-    const b = await readBody(req);
-    const target = String(b.mode || '').toLowerCase();
-    if (target !== 'dry' && target !== 'live') {
-      return json(res, { error: 'mode must be "dry" or "live"' }, 400);
-    }
-    if (state.mode === target) {
-      return json(res, { ok: true, mode: state.mode, message: 'already in ' + target });
-    }
-    const prev = state.mode;
-    state.mode = target;
-    save();
-    broadcast('mode', target);
-    return json(res, { ok: true, mode: state.mode, previous: prev, live_cash: target === 'live' ? dryCash() : null });
+    return json(res, { error: 'Kai-Mirror is the DRY-only server (port 8787). Mode is fixed to dry. Live trading runs on the separate Kai-LIVE server (port 8788).' }, 403);
   }
   if (p === '/api/mode') return json(res, modePayload());
 

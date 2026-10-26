@@ -3,9 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kalshi-Frigo - DRY Trading Dashboard</title>
-<!-- Favicon is green for both books (LIVE and DRY share the clean palette). The
-     letter still distinguishes L vs D. -->
+<title>Kai-Mirror - DRY Trading Dashboard</title>
+<!-- Favicon is green for the DRY book. The letter still says D. -->
 <link rel="icon" id="favicon" href="data:image/svg+xml,&lt;svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22&gt;&lt;rect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%232ee6a8%22/&gt;&lt;text x=%2216%22 y=%2223%22 font-size=%2219%22 font-weight=%22bold%22 text-anchor=%22middle%22 fill=%22%23000%22&gt;D&lt;/text&gt;&lt;/svg&gt;">
 <style>
 :root{
@@ -110,7 +109,7 @@ body[data-mode="dry"] .tile{border:1px solid var(--up)}
 body[data-mode="live"] .card{border:1px solid var(--down)}
 body[data-mode="live"] .card:hover{border-color:var(--down)}
 body[data-mode="live"] .tile{border:1px solid var(--down)}
-/* The logo keeps its subtle red accent (it is the brand), shared by both books. */
+/* The logo keeps its subtle red accent (it is the brand). */
 body[data-mode="live"] .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 6px 20px rgba(43,108,255,.35)}
 body[data-mode="dry"]  .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 6px 20px rgba(43,108,255,.35)}
 
@@ -123,9 +122,6 @@ body[data-mode="dry"]  .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:
 }
 .modeflag.dry{color:var(--up);background:rgba(46,230,168,.12)}
 .modeflag.dry {color:var(--up);background:rgba(46,230,168,.10)}
-/* OPERATOR ORDER: the LIVE MODE flag goes blood red with a red border when
-   the book is LIVE - text, border and glow all in the alarm colour. */
-.modeflag.live{color:var(--blood);background:rgba(161,0,0,.16);border-color:var(--blood);box-shadow:0 0 0 1px rgba(0,0,0,.35),0 4px 14px rgba(161,0,0,.45)}
 .modeflag .dot{width:9px;height:9px}
 .orbitring{display:none}
 .url{
@@ -335,11 +331,11 @@ button.loading.yellow::after {
        from the name and made the header two visual bands on a wide screen. -->
   <div class="brand">
     <div class="logo" aria-hidden="true">
-      <img src="/static/logo.png" alt="Frigo" width="34" height="34" style="display:block">
+      <img src="/static/logo.png" alt="Kai-Mirror" width="34" height="34" style="display:block">
     </div>
     <div class="brandtext">
-      <h1>Kalshi-Frigo <span>&middot; DRY trading dashboard</span></h1>
-      <div class="sub">LLM-driven Kalshi automation &middot; paper &amp; live &middot; multi-strategy</div>
+      <h1>Kai-Mirror <span>&middot; DRY trading dashboard</span></h1>
+      <div class="sub">LLM-driven Kalshi automation &middot; paper only &middot; multi-strategy</div>
     </div>
   </div>
   <!-- State flag and switch share a row: the flag sits to the LEFT of the
@@ -352,13 +348,13 @@ button.loading.yellow::after {
       <span class="dot"></span>
       <span id="modeFlagText">DRY MODE</span>
     </div>
-    <!-- DRY / LIVE switch. ALL NO MARKETS sits in the SAME control group with
-         the SAME styling as the two mode buttons: it is the third book of the
-         three, it opens its own page, and it must not read as a stray link
-         parked outside the control it belongs with. -->
+    <!-- DRY switch. ALL NO MARKETS sits in the SAME control group with the
+         SAME styling: it is the second book of the two on Kai-Mirror, it opens
+         its own page, and it must not read as a stray link parked outside the
+         control it belongs with. There is no LIVE button: Kai-Mirror is the
+         DRY-only server. -->
     <div class="modeswitch">
       <a id="modeDry" class="modebtn on" href="/">DRY</a>
-      <a id="modeLive" class="modebtn live" href="/live">LIVE</a>
       <a id="allNoBtn" class="modebtn allno" href="/all-no-markets" title="ALL NO MARKETS - NO-side only, maker entries, $250 of its own simulated money">ALL NO</a>
     </div>
   </div>
@@ -437,7 +433,7 @@ button.loading.yellow::after {
 <div class="panel" style="margin-bottom:12px">
   <div class="ph" style="cursor:pointer" onclick="toggleLlmUsage()">
     <h2>OpenRouter key usage &mdash; what is actually consuming it</h2>
-    <span class="note"><span id="llmToggle" style="cursor:pointer;font-weight:600">show</span> &middot; lifetime, never reset &middot; DRY + LIVE together (one key)</span>
+    <span class="note"><span id="llmToggle" style="cursor:pointer;font-weight:600">show</span> &middot; lifetime, never reset &middot; DRY book only (one key)</span>
   </div>
   <div class="pb" id="llmUsageBodyWrap" style="display:none">
     <div class="cstats" style="grid-template-columns:repeat(auto-fit,minmax(100px,1fr));margin:0 0 12px">
@@ -454,8 +450,8 @@ button.loading.yellow::after {
     <p class="note" style="margin-top:10px;color:var(--faint);font-size:11px">
       "Tracked cost" is the cost the client computes per call; the "AI spend
       today" tile above resets every deploy and under-reports. This table is
-      the lifetime log and does not reset &mdash; one key, both books, so DRY
-      and LIVE read the same account-wide numbers.
+      the lifetime log and does not reset &mdash; one key, this DRY book's
+      calls only.
     </p>
   </div>
 </div>
@@ -466,8 +462,7 @@ button.loading.yellow::after {
     <h2>Strategies</h2>
     <span class="note">click a card for everything about that strategy</span>
     <span class="bar">
-           <button id="startAllBtn" onclick="startAll()">Start all in DRY</button>
-           <button id="startAllLiveBtn" onclick="startAllLive()">Start all in LIVE</button>
+           <button id="startAllBtn" onclick="startAll()">Start all</button>
            <button onclick="stopAll()">Stop all</button>
          </span>
   </div>
@@ -492,7 +487,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-btc_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-btc_updown" onclick="toggleStrategy('btc_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-btc_updown" onclick="toggleStrategy('btc_updown', false)">Stop</button>
              <button onclick="showAnalysis('btc_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -516,7 +511,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-btc_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-btc_1h_updown" onclick="toggleStrategy('btc_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-btc_1h_updown" onclick="toggleStrategy('btc_1h_updown', false)">Stop</button>
              <button onclick="showAnalysis('btc_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -540,7 +535,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-eth_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-eth_updown" onclick="toggleStrategy('eth_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-eth_updown" onclick="toggleStrategy('eth_updown', false)">Stop</button>
              <button onclick="showAnalysis('eth_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -564,7 +559,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-eth_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-eth_1h_updown" onclick="toggleStrategy('eth_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-eth_1h_updown" onclick="toggleStrategy('eth_1h_updown', false)">Stop</button>
              <button onclick="showAnalysis('eth_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -588,7 +583,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-hyperliquid_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-hyperliquid_updown" onclick="toggleStrategy('hyperliquid_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-hyperliquid_updown" onclick="toggleStrategy('hyperliquid_updown', false)">Stop</button>
              <button onclick="showAnalysis('hyperliquid_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -612,7 +607,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-hyperliquid_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-hyperliquid_1h_updown" onclick="toggleStrategy('hyperliquid_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-hyperliquid_1h_updown" onclick="toggleStrategy('hyperliquid_1h_updown', false)">Stop</button>
              <button onclick="showAnalysis('hyperliquid_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -636,7 +631,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-xrp_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-xrp_updown" onclick="toggleStrategy('xrp_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-xrp_updown" onclick="toggleStrategy('xrp_updown', false)">Stop</button>
              <button onclick="showAnalysis('xrp_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -660,7 +655,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-xrp_1h_updown-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-xrp_1h_updown" onclick="toggleStrategy('xrp_1h_updown', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-xrp_1h_updown" onclick="toggleStrategy('xrp_1h_updown', false)">Stop</button>
              <button onclick="showAnalysis('xrp_1h_updown')">ANALYSIS OF</button>
            </span>
          </div>
@@ -684,7 +679,7 @@ button.loading.yellow::after {
          <div class="cfoot">
            <span class="mono" style="color:var(--faint)">BUY AMT <span id="c-all_no_markets-dep">$0.00</span></span>
            <span class="bar" onclick="event.stopPropagation()">
-             <button id="btn-all_no_markets" onclick="toggleStrategy('all_no_markets', false, this.textContent.trim() === 'Start')">Stop</button>
+             <button id="btn-all_no_markets" onclick="toggleStrategy('all_no_markets', false)">Stop</button>
              <button onclick="showAnalysis('all_no_markets')">ANALYSIS OF</button>
            </span>
          </div>
@@ -1333,7 +1328,7 @@ button.loading.yellow::after {
   <div class="ph"><h2>What this system does</h2><span class="note">the trading pipeline</span></div>
   <div class="pb">
     <p style="color:var(--dim);font-size:12.5px;margin-bottom:10px">
-      Kalshi-Frigo scans prediction markets, asks an LLM whether each contract is mispriced,
+      Kai-Mirror scans prediction markets, asks an LLM whether each contract is mispriced,
       sizes a position with fractional Kelly sizing, then manages exits with stop-loss,
       take-profit and time-based rules. Every scan is recorded in SQLite &mdash; that is what
       the numbers on this page are read from.
@@ -1518,7 +1513,7 @@ button.loading.yellow::after {
   </div>
 </div>
 
-<footer>Kalshi-Frigo &middot; prediction-market automation &middot; not financial advice</footer>
+<footer>Kai-Mirror &middot; prediction-market automation &middot; not financial advice</footer>
 </div>
 
 <script>
@@ -1912,12 +1907,9 @@ function paint(s) {
 
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
 
-  // The headline tiles are mode-specific markup, and each set of ids is written
-  // from its OWN book. The DRY and LIVE tiles previously shared element ids, so
-  // this line wrote the real Kalshi balance, position count, exposure and
-  // realized P&L into the DRY tiles ten seconds after load - the page
-  // contradicting its own DRY MODE flag. Live ids do not exist in DRY and vice
-  // versa, so each write is a no-op in the other mode rather than a leak.
+  // The headline tiles are written from this server's OWN DRY book. Kai-Mirror
+  // is the DRY-only server: there is no other book here, so no tile can ever
+  // leak another book's numbers.
 
   // --- DRY headline tiles: always updated from the DRY book ---
   const dry = s.accounts && s.accounts.dry || {};
@@ -2825,7 +2817,7 @@ async function startAll() {
     if ((SNAPSHOT.mode && SNAPSHOT.mode.mode) === 'live') {
       // Popup approval auto-granted: button is law, always continue.
       // (Previously: confirm dialog blocked live starts forever.)
-      console.log('LIVE MODE approved: starting ' + names.length + ' strategies');
+      console.log('DRY start-all approved: starting ' + names.length + ' strategies');
     }
     
     // Start the stopped strategies
@@ -2854,48 +2846,6 @@ async function startAll() {
       btn.classList.remove('loading');
       btn.classList.remove('yellow');
     }
-  }
-}
-
-async function startAllLive() {
-  const btn = document.getElementById('startAllLiveBtn');
-  if (btn) { btn.classList.add('loading'); btn.classList.add('yellow'); }
-  
-  try {
-    // 1. Switch engine to LIVE mode
-    const modeResp = await fetch('/api/mode', {
-      method: 'POST',
-      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-      body: JSON.stringify({ mode: 'live' })
-    });
-    const modeData = await modeResp.json().catch(() => ({}));
-    if (!modeResp.ok) {
-      note('mode switch failed: ' + (modeData.error || 'unknown'));
-      return;
-    }
-    note('engine switched to LIVE mode');
-    
-    // 2. Start all stopped lanes
-    const names = (SNAPSHOT.strategy_cards || []).filter(c => !c.running).map(c => c.name);
-    if (!names.length) {
-      note('all lanes already running');
-      return;
-    }
-    
-    for (const n of names) await toggleStrategy(n, true, true);
-    
-    // Poll until all are running
-    let pollCount = 0;
-    while (pollCount < 120) {
-      await new Promise(r => setTimeout(r, 500));
-      pollCount++;
-      try {
-        const s = await (await fetch('/api/strategies', { headers: authHeaders() })).json().catch(() => ({}));
-        if (names.every(n => s[n] && s[n].running)) { note('LIVE started: ' + names.join(', ')); break; }
-      } catch (e) {}
-    }
-  } finally {
-    if (btn) { btn.classList.remove('loading'); btn.classList.remove('yellow'); }
   }
 }
 
@@ -3055,7 +3005,7 @@ safeRun(refreshFeeds, 'refreshFeeds');
 
   <!-- Footer -->
   <footer>
-    <p>Kalshi-Frigo Trading Dashboard &middot; ALL NO MARKETS are integrated into the main dashboard at the bottom</p>
+    <p>Kai-Mirror Trading Dashboard &middot; ALL NO MARKETS are integrated into the main dashboard at the bottom</p>
   </footer>
 </div>
 </body>

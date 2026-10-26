@@ -1,9 +1,9 @@
 <#
-  Kai-Mirror control script.
-    .\kai.ps1 start     start the server (dashboard + Kalshi/Coinbase/Kilo bridge)
-    .\kai.ps1 stop      stop the server
+  Kai-Mirror (DRY-only, port 8787) control script.
+    .\kai.ps1 start     start the DRY server (dashboard + Kalshi/Coinbase/Kilo bridge)
+    .\kai.ps1 stop      stop the DRY server
     .\kai.ps1 restart   stop then start
-    .\kai.ps1 status    is it up, what mode, dry cash, lane count
+    .\kai.ps1 status    is it up, dry cash, lane count
     .\kai.ps1 reset     wipe the DRY book back to a clean $300 / zero trades
     .\kai.ps1 on        start every trading lane (paper)
     .\kai.ps1 off       stop every trading lane
@@ -130,8 +130,7 @@ switch ($Action.ToLower()) {
   'status'  { Show-Status }
   'reset'   { Reset-Dry }
   'on'      { Set-Lanes $true }
-  'onlive'  { Set-Lanes-Live }
   'off'     { Set-Lanes $false }
   'logs'    { if (Test-Path $LogFile) { Get-Content $LogFile -Tail 40 } else { Write-Host 'no log yet' } }
-  'default' { Write-Host 'usage: .\kai.ps1 [start|stop|restart|status|reset|on|onlive|off|logs]' }
+  'default' { Write-Host 'usage: .\kai.ps1 [start|stop|restart|status|reset|on|off|logs]' }
 }
