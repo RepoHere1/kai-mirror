@@ -101,7 +101,11 @@ body::before{
   transition:border-color .18s ease, box-shadow .18s ease;
 }
 body[data-mode="dry"]{--mode-color:var(--up);--mode-glow:rgba(46,230,168,.32)}
-body[data-mode="live"]{--mode-color:var(--up);--mode-glow:rgba(46,230,168,.32)}
+body[data-mode="live"]{--mode-color:var(--down);--mode-glow:rgba(161,0,0,.32)}
+/* Green border on every card when DRY - simulated money, clean frame */
+body[data-mode="dry"] .card{border:1px solid var(--up)}
+body[data-mode="dry"] .card:hover{border-color:var(--up)}
+body[data-mode="dry"] .tile{border:1px solid var(--up)}
 /* Red border on every card when LIVE - real money is leaving the account. */
 body[data-mode="live"] .card{border:1px solid var(--down)}
 body[data-mode="live"] .card:hover{border-color:var(--down)}

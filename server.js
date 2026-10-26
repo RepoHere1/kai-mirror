@@ -19,6 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');
+const brain = require('./brain');
 
 const HERE = __dirname;
 const ENV = kalshi.ENV;
@@ -59,7 +60,9 @@ function defaultState() {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
       live: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
-    runtime: { clip: 5, min_edge: 0.06, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 45, entry_cooldown_sec: 120 },
+    runtime: { clip: 5, min_edge: 0.001, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 30, entry_cooldown_sec: 60 },
+    signal_weights: brain.signalStats(),
+    signal_outcomes: [],
     lanes: {},
     live: { positions: [], closed: [], balance: 0, starting_balance: 0, entries: 0, running: false },
     alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
@@ -185,6 +188,8 @@ function quoteFromMarket(m) {
     last: num(m.last_price_dollars),
     yes_bid_size: num(m.yes_bid_size_fp),
     yes_ask_size: num(m.yes_ask_size_fp),
+    no_bid_size: num(m.no_bid_size_fp),
+    no_ask_size: num(m.no_ask_size_fp),
     volume: num(m.volume_fp),
     open_interest: num(m.open_interest_fp),
     close_time: m.close_time,
@@ -540,7 +545,6 @@ async function markPositions() {
 }
 
 async function engineTick() {
-  // 1) mark & settle first so cash is truthful before new entries
   await markPositions();
   if (state.mode === 'live') await markLivePositions();
   const list = LANES.filter(l => l.name !== 'all_no_markets');
@@ -558,48 +562,46 @@ async function engineTick() {
     if (!s || !Number.isFinite(s.price)) { ls.skips++; ls.last_skip = 'spot feed ' + lane.spot + ' not ready'; continue; }
     if (q.strike == null) { ls.skips++; ls.last_skip = 'market has no strike'; continue; }
     const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
-    if (tau < 20) { ls.skips++; ls.last_skip = 'contract closes in ' + Math.round(tau) + 's'; continue; }
+    if (tau < 10) { ls.skips++; ls.last_skip = 'contract closes in ' + Math.round(tau) + 's'; continue; }
     const perSec = perSecondVol(lane.spot, 900);
-    if (!perSec) { ls.skips++; ls.last_skip = 'insufficient real ticks for vol'; continue; }
-    const z = Math.log(s.price / q.strike) / (perSec * Math.sqrt(tau));
-    const fairUp = normCdf(z);
-    const edgeYes = q.yes_ask != null ? fairUp - q.yes_ask : -1;
-    const edgeNo = q.no_ask != null ? (1 - fairUp) - q.no_ask : -1;
-    const side = edgeYes > edgeNo ? 'YES' : 'NO';
-    const price = side === 'YES' ? q.yes_ask : q.no_ask;
-    const edge = side === 'YES' ? edgeYes : edgeNo;
-    const fair = side === 'YES' ? fairUp : 1 - fairUp;
-    ls.last_edge = Number(edge.toFixed(4));
+    
+    // Build params for brain evaluation
+    const volWindow = s.points.slice(-20).map(p => p.p);
+    const fills = liveFillsList ? liveFillsList().slice(-20) : [];
+    const allQuotes = (act.open_markets > 0) ? [q] : [];
+    
+    // Evaluate with ensemble brain
+    const result = brain.evaluate({
+      q, spotPrice: s.price, strike: q.strike, tau, perSecVol: perSec,
+      volWindow, fills, history: ls.price_history || [],
+      quotes: allQuotes, weights: state.signal_weights
+    });
+    
+    ls.last_edge = result.edge || 0;
+    ls.last_brain = JSON.stringify({ side: result.side, confidence: result.confidence, reason: result.reason, regime: result.regime });
     ls.heartbeat = new Date().toISOString();
+    
+    if (!result.side) { ls.skips++; ls.last_skip = result.reason || 'no signal'; continue; }
+    
+    const side = result.side;
+    const price = side === 'YES' ? q.yes_ask : q.no_ask;
     if (price == null) { ls.skips++; ls.last_skip = 'no ask on ' + side; continue; }
-    if (price >= state.runtime.max_price) { ls.skips++; ls.last_skip = 'entry price ' + price + ' in the blocked $' + state.runtime.max_price.toFixed(2) + '+ band'; continue; }
+    if (price >= state.runtime.max_price) { ls.skips++; ls.last_skip = 'entry price ' + price + ' in blocked band'; continue; }
     if (price < state.runtime.min_price) { ls.skips++; ls.last_skip = 'entry price ' + price + ' below floor'; continue; }
-    if (edge < state.runtime.min_edge) { ls.skips++; ls.last_skip = 'no edge (best ' + edge.toFixed(3) + ' < required ' + state.runtime.min_edge + ')'; ls.pending_edge = null; continue; }
-
-    // The edge must PERSIST across two consecutive cycles before an entry is
-    // taken. A single-cycle edge on a contract whose strike is within a dollar
-    // of spot is noise: BTC crosses the strike and the contract flips 15+ points
-    // in two seconds, which churns the book with instant, meaningless exits.
-    const sig = side + ':' + q.ticker + ':' + edge.toFixed(3);
-    if (!ls.pending_edge || ls.pending_edge.sig !== sig || Date.now() - ls.pending_edge.at > 8000) {
-      ls.pending_edge = { sig, at: Date.now(), edge };
-      ls.skips++; ls.last_skip = 'edge ' + edge.toFixed(3) + ' seen once, waiting for confirmation';
-      continue;
-    }
-
-    // One clip per lane per cooldown: the book is a book, not a slot machine.
+    if (result.edge < state.runtime.min_edge) { ls.skips++; ls.last_skip = 'no edge (' + result.edge.toFixed(4) + ' < ' + state.runtime.min_edge + ')'; continue; }
+    if (result.confidence < 0.3) { ls.skips++; ls.last_skip = 'low confidence (' + result.confidence.toFixed(2) + ')'; continue; }
+    
     const lastEntry = ls.last_entry_at ? Date.now() - ls.last_entry_at : Infinity;
-    const cooldown = Number(state.runtime.entry_cooldown_sec || 120) * 1000;
-    if (lastEntry < cooldown) {
-      ls.skips++; ls.last_skip = 'cooldown ' + Math.ceil((cooldown - lastEntry) / 1000) + 's';
-      continue;
-    }
+    const cooldown = Number(state.runtime.entry_cooldown_sec || 60) * 1000;
+    if (lastEntry < cooldown) { ls.skips++; ls.last_skip = 'cooldown ' + Math.ceil((cooldown - lastEntry) / 1000) + 's'; continue; }
+    
     const held = (state.mode === 'live' ? state.live.positions : state.dry.positions).filter(p => p.strategy === lane.name).length;
-    if (held >= 1) { ls.skips++; ls.last_skip = 'already holding a clip in this lane'; continue; }
-
+    if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
+    
+    const fair = side === 'YES' ? (q.yes_ask + result.edge) : (q.no_ask + result.edge);
     const opened = state.mode === 'live'
-      ? await openLivePosition(lane, q, side, price, fair, edge, perSec)
-      : openDryPosition(lane, q, side, price, fair, edge, perSec);
+      ? await openLivePosition(lane, q, side, price, fair, result.edge, perSec)
+      : openDryPosition(lane, q, side, price, fair, result.edge, perSec);
     if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
   }
 }
@@ -767,8 +769,8 @@ function cards() {
       realized: Number(closed.reduce((a, t) => a + (t.pnl || 0), 0).toFixed(2)),
       entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge,
       equity,
-      mode: 'dry',
-      book: 'dry',
+      mode: state.mode,
+      book: state.mode,
       heartbeat: ls.heartbeat,
       // LIVE book stats (read-only, from real Kalshi fills)
       live_trades: liveClosed.length,
@@ -1218,7 +1220,9 @@ async function serveDashboard(route, res) {
     const placeholder = 'const SNAPSHOT = {"__KAI_SNAPSHOT_PLACEHOLDER__":true};';
     html = html.replace(placeholder, `const SNAPSHOT = ${snapshotJson};`);
     // The page's own book wins: a DRY page never claims to be LIVE.
-    html = html.replace(/data-mode="[^"]*"/g, `data-mode="${book}"`);
+    // Only replace data-mode on the body tag, NOT in CSS attribute selectors
+    // (the CSS uses data-mode to switch card borders between books).
+    html = html.replace(/(<body[^>]*?)data-mode="[^"]*"/, `$1data-mode="${book}"`);
     if (!html.includes('data-mode=')) {
       html = html.replace(/<body([^>]*?)>/, `<body data-mode="${book}"$1>`);
     }
@@ -1393,7 +1397,7 @@ async function handle(req, res) {
     const out = {};
     for (const lane of LANES) {
       const ls = laneState(lane.name);
-      out[lane.name] = { name: lane.name, label: lane.label, running: !!ls.running, mode: 'dry', series: ls.last_series, entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge, heartbeat: ls.heartbeat };
+      out[lane.name] = { name: lane.name, label: lane.label, running: !!ls.running, mode: state.mode, series: ls.last_series, entries: ls.entries, skips: ls.skips, last_skip: ls.last_skip, last_edge: ls.last_edge, heartbeat: ls.heartbeat };
     }
     return json(res, out);
   }
@@ -1402,14 +1406,20 @@ async function handle(req, res) {
     const name = decodeURIComponent(m[1]);
     const lane = LANE_BY_NAME.get(name);
     if (!lane) return json(res, { error: 'unknown strategy: ' + name }, 404);
+    const b = await readBody(req);
     const ls = laneState(name);
-    ls.running = !ls.running;
+    // Accept an explicit desired state from the client; default to toggle.
+    if (typeof b.running === 'boolean') {
+      ls.running = b.running;
+    } else {
+      ls.running = !ls.running;
+    }
     ls.started_at = ls.running ? new Date().toISOString() : ls.started_at;
     ls.stop_reason = ls.running ? '' : 'operator stop';
     ls.heartbeat = new Date().toISOString();
     save();
     broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
-    return json(res, { name, running: ls.running, mode: 'dry' });
+    return json(res, { name, running: ls.running, mode: state.mode });
   }
   if ((m = p.match(/^\/api\/strategy\/([^/]+)\/analysis$/))) {
     const name = decodeURIComponent(m[1]);
@@ -1451,7 +1461,7 @@ async function handle(req, res) {
   }
 
   // --- analysis
-  if (p === '/api/analysis') return json(res, analysisPayload(null));
+  undefined
 
   // --- recent trades
   if (p === '/api/recent-trades') {
@@ -1493,7 +1503,7 @@ async function handle(req, res) {
           up_ask: q.yes_ask, up_bid: q.yes_bid, down_ask: q.no_ask, down_bid: q.no_bid,
           last: q.last, close_time: q.close_time, horizon: 0, volume: q.volume,
           event: q.event, bucket: q.ticker.split('-')[1], seconds_left: Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000),
-        } : null,
+    } : null,
         buckets: (res15.markets || []).map(x => x.ticker.split('-')[1]),
       },
       series,
@@ -1540,6 +1550,24 @@ async function handle(req, res) {
     return;
   }
 
+  if (p === '/api/brain') {
+    const laneName = u.searchParams.get('lane');
+    const lane = laneName ? LANE_BY_NAME.get(laneName) : null;
+    if (!lane) return json(res, { error: 'lane required' }, 400);
+    const act = await activeQuote(lane);
+    if (!act.quote) return json(res, { error: 'no quote', series: act.series });
+    const q = act.quote;
+    const s = lane.spot ? spot[lane.spot] : null;
+    const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
+    const perSec = s ? perSecondVol(lane.spot, 900) : null;
+    const volWindow = s ? s.points.slice(-20).map(p => p.p) : [];
+    const fills = liveFillsList ? liveFillsList().slice(-20) : [];
+    const result = brain.evaluate({
+      q, spotPrice: s ? s.price : null, strike: q.strike, tau, perSecVol: perSec,
+      volWindow, fills, history: [], quotes: [q], weights: state.signal_weights
+    });
+    return json(res, { ...result, lane: lane.name, series: act.series, quote: q, weights: state.signal_weights });
+  }
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'no route ' + p }));
 }
