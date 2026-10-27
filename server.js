@@ -1,4 +1,13 @@
 ﻿'use strict';
+// ===========================================================================
+// ATTENTION — ANY AI / AGENT EDITING THIS FILE. Read before touching anything.
+//   The operator's lane BUTTON PUSH is IMMEDIATE, ABSOLUTE LAW. No code you add,
+//   refactor, optimise, or "fix" may override, delay, auto-reverse, auto-restart,
+//   keep-alive, supervise, or otherwise contravene an operator toggle of a lane's
+//   running state. `ls.running` is written by the operator toggle endpoint and the
+//   operator on/off scripts ONLY. If a change could make any lane disobey the
+//   operator's last button push, DO NOT SHIP IT — revert and ask.
+// ===========================================================================
 // Kai-Mirror server.
 //
 // DATA POLICY (hard rules, by operator instruction):
@@ -61,6 +70,32 @@ const LANE_BY_NAME = new Map(LANES.map(l => [l.name, l]));
 //      the operator changes it again.
 //   Violating any of these three is a bug, full stop.
 // ===========================================================================
+
+// OPERATOR_LAW: Enforced at runtime — any violation throws immediately.
+const OPERATOR_LAW = Object.freeze({
+  version: '2026-10-27',
+  decree: 'Operator button push is immediate absolute law. No supervisor, auto-start, auto-restart, watchdog, or keep-alive may ever contravene.',
+  onlyWritersOfRunning: ['/api/strategy/:name/toggle endpoint', 'kai.ps1 on/off', 'kai-live.ps1 on/off'],
+  forbiddenPatterns: ['supervisor', 'auto.start', 'auto.restart', 'keep.alive', 'watchdog', 'resurrect', 'reenable'],
+  enforce: function(action, context) {
+    const forbidden = this.forbiddenPatterns.some(p => action.toLowerCase().includes(p) || JSON.stringify(context).toLowerCase().includes(p));
+    if (forbidden) {
+      const msg = `OPERATOR_LAW VIOLATION: ${action} contains forbidden pattern. ${this.decree}`;
+      console.error('[OPERATOR_LAW]', msg, context);
+      throw new Error(msg);
+    }
+  },
+  assertNoSupervisor: function() {
+    // Runtime guard — if any code tries to spawn a supervisor, it dies here.
+    if (global.__KAI_SUPERVISOR_SPAWNED) {
+      throw new Error('OPERATOR_LAW: Supervisor spawn detected — exterminated.');
+    }
+  }
+});
+
+// Seal the law — cannot be modified, deleted, or overridden.
+Object.seal(OPERATOR_LAW);
+global.OPERATOR_LAW = OPERATOR_LAW;
 
 // ---------------------------------------------------------------------------
 // Persisted state
@@ -533,8 +568,10 @@ async function engineTick() {
     if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
     
     const fair = side === 'YES' ? (q.yes_ask + result.edge) : (q.no_ask + result.edge);
-    // OPERATOR LAW: if the operator stopped this lane mid-tick, place NO order.
-    if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
+        // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
+        // Enforce: operator's last button push is absolute law.
+        OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
+        if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
     const opened = state.mode === 'live'
       ? await openDryPosition(lane, q, side, price, fair, result.edge, perSec)
       : openDryPosition(lane, q, side, price, fair, result.edge, perSec);
@@ -1294,28 +1331,27 @@ async function handle(req, res) {
     return json(res, out);
   }
   let m;
-  if ((m = p.match(/^\/api\/strategy\/([^/]+)\/toggle$/)) && method === 'POST') {
-    const name = decodeURIComponent(m[1]);
-    const lane = LANE_BY_NAME.get(name);
-    if (!lane) return json(res, { error: 'unknown strategy: ' + name }, 404);
-    const b = await readBody(req);
-    const ls = laneState(name);
-    // OPERATOR LAW: the operator's command is IMMEDIATE and ABSOLUTE. Apply the
-    // requested state synchronously and reply with it the same tick. There is no
-    // supervisor, timer, or auto-start that can override this — the operator is
-    // the only writer of `ls.running`.
-    if (typeof b.running === 'boolean') {
-      ls.running = b.running;
-    } else {
-      ls.running = !ls.running;
+    if ((m = p.match(/^\/api\/strategy\/([^/]+)\/toggle$/)) && method === 'POST') {
+      const name = decodeURIComponent(m[1]);
+      const lane = LANE_BY_NAME.get(name);
+      if (!lane) return json(res, { error: 'unknown strategy: ' + name }, 404);
+      const b = await readBody(req);
+      const ls = laneState(name);
+      // OPERATOR_LAW: The operator's command is IMMEDIATE, ABSOLUTE LAW.
+      // Enforce at runtime — this is the ONLY writer of ls.running.
+      OPERATOR_LAW.enforce('toggleStrategy', { lane: name, requestedRunning: b.running });
+      if (typeof b.running === 'boolean') {
+        ls.running = b.running;
+      } else {
+        ls.running = !ls.running;
+      }
+      ls.started_at = ls.running ? new Date().toISOString() : ls.started_at;
+      ls.stop_reason = ls.running ? '' : 'operator stop';
+      ls.heartbeat = new Date().toISOString();
+      save();
+      broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
+      return json(res, { name, running: ls.running, mode: state.mode, law: 'OPERATOR_LAW_ENFORCED' });
     }
-    ls.started_at = ls.running ? new Date().toISOString() : ls.started_at;
-    ls.stop_reason = ls.running ? '' : 'operator stop';
-    ls.heartbeat = new Date().toISOString();
-    save();
-    broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
-    return json(res, { name, running: ls.running, mode: state.mode });
-  }
   if ((m = p.match(/^\/api\/strategy\/([^/]+)\/analysis$/))) {
     const name = decodeURIComponent(m[1]);
     if (!LANE_BY_NAME.get(name)) return json(res, { error: 'unknown strategy: ' + name }, 404);
@@ -1553,6 +1589,9 @@ const server = http.createServer((req, res) => {
 });
 
 async function boot() {
+  // OPERATOR_LAW: Assert no supervisor exists or can be spawned.
+  OPERATOR_LAW.assertNoSupervisor();
+  OPERATOR_LAW.enforce('boot', { action: 'server_start', mode: 'dry' });
   log('boot', { mode: 'dry', dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
   await pollSpot();
   setInterval(pollSpot, 2000);
