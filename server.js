@@ -397,7 +397,7 @@ function dryAccountPayload() {
   };
 }
 
-function openLivePosition(lane, q, side, price, fair, edge, sigma) {
+function openDryPosition(lane, q, side, price, fair, edge, sigma) {
   const qty = Math.max(1, Math.floor(state.runtime.clip / price));
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
@@ -436,7 +436,7 @@ function openLivePosition(lane, q, side, price, fair, edge, sigma) {
   return pos;
 }
 
-function closeLivePosition(pos, exitPrice, reason, result) {
+function closeDryPosition(pos, exitPrice, reason, result) {
   const idx = state.dry.positions.indexOf(pos);
   if (idx === -1) return;
   state.dry.positions.splice(idx, 1);
@@ -464,7 +464,7 @@ function closeLivePosition(pos, exitPrice, reason, result) {
 // ---------------------------------------------------------------------------
 
 
-async function markLivePositions() {
+async function markDryPositions() {
   const tickers = Array.from(new Set(state.dry.positions.map(p => p.market_id)));
   for (const ticker of tickers) {
     const q = await quoteForTicker(ticker);
@@ -473,11 +473,11 @@ async function markLivePositions() {
     for (const pos of held) {
       if (q.result === 'yes' || q.result === 'no') {
         const settled = Number(q.result === pos.side.toLowerCase() ? 1 : 0);
-        closeLivePosition(pos, settled, 'settled', q.result);
+        closeDryPosition(pos, settled, 'settled', q.result);
         continue;
       }
       if (q.status === 'finalized' || q.status === 'settled') {
-        closeLivePosition(pos, 0, 'settled_no_result', q.status);
+        closeDryPosition(pos, 0, 'settled_no_result', q.status);
         continue;
       }
       const bid = pos.side === 'YES' ? q.yes_bid : q.no_bid;
@@ -485,15 +485,15 @@ async function markLivePositions() {
       pos.quote = { bid, ask: pos.side === 'YES' ? q.yes_ask : q.no_ask, close_time: q.close_time, status: q.status, updated: q.updated };
       const heldMs = Date.now() - new Date(pos.opened).getTime();
       if (heldMs < Number(state.runtime.min_hold_sec || 45) * 1000) continue;
-      if (bid != null && bid >= pos.take_profit) closeLivePosition(pos, bid, 'take_profit', '');
-      else if (bid != null && bid <= pos.stop_loss) closeLivePosition(pos, bid, 'stop_loss', '');
+      if (bid != null && bid >= pos.take_profit) closeDryPosition(pos, bid, 'take_profit', '');
+            else if (bid != null && bid <= pos.stop_loss) closeDryPosition(pos, bid, 'stop_loss', '');
     }
   }
 }
 
 
 async function engineTick() {
-  await markLivePositions();
+  await markDryPositions();
   const list = LANES.filter(l => true);
   for (const lane of list) {
     const ls = laneState(lane.name);
@@ -546,13 +546,13 @@ async function engineTick() {
     if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
     
     const fair = side === 'YES' ? (q.yes_ask + result.edge) : (q.no_ask + result.edge);
-        // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
-        // Enforce: operator's last button push is absolute law.
-        OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
-        if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
-    const opened = state.mode === 'dry'
-      ? await openLivePosition(lane, q, side, price, fair, result.edge, perSec)
-      : openLivePosition(lane, q, side, price, fair, result.edge, perSec);
+            // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
+            // Enforce: operator's last button push is absolute law.
+            OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
+            if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
+        const opened = state.mode === 'dry'
+          ? await openDryPosition(lane, q, side, price, fair, result.edge, perSec)
+          : openDryPosition(lane, q, side, price, fair, result.edge, perSec);
     if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
   }
 }
@@ -1606,7 +1606,6 @@ async function boot() {
       for (const s of lane.seriesList) await marketsForSeries(s, 5);
     }
   }, 5000);
-  setInterval(() => engineTick().catch(e => log('engine_error', { error: String(e.message || e) })), 2000);
   setInterval(async () => {
     try { rememberTitles(LANES); await refreshLive(false); broadcast('snapshot', 'tick'); sseMessage({ e: 'tick', at: new Date().toISOString(), spot_btc: spot['BTC-USD'].price }); } catch (e) { }
   }, 3000);
