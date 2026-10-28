@@ -331,7 +331,7 @@ function dryRealized() {
 // has loaded. Returns null when the balance call is rate-limited/absent so the
 // display can fall back to the computed identity instead of inventing a number.
 function realBalanceCash() {
-  const b = dryCache.balance;
+  const b = null;
   if (!b || typeof b !== 'object') return null;
   for (const k of ['balance_available', 'balance_total', 'balance', 'buying_power']) {
     const v = Number(b[k]);
@@ -380,10 +380,10 @@ function dryAccountPayload() {
   const wins = closed.filter(t => t.pnl > 0).length;
   return {
     book: 'dry',
-    label: 'DRY account - real money',
+    label: 'DRY account - paper money',
     starting_balance: state.dry.starting_balance,
     baseline: state.dry.baseline,
-    cash: realBalanceCash() ?? dryCash(),
+    cash: dryCash(),
     equity: dryEquity(),
     realized: Number(dryRealized().toFixed(2)),
     total_pnl: Number((dryEquity() - state.dry.starting_balance).toFixed(2)),
@@ -514,7 +514,7 @@ async function engineTick() {
     
     // Build params for brain evaluation
     const volWindow = s.points.slice(-20).map(p => p.p);
-    const fills = dryFillsList ? dryFillsList().slice(-20) : [];
+    const fills = [];
     const allQuotes = (act.open_markets > 0) ? [q] : [];
     
     // Evaluate with ensemble brain
@@ -560,43 +560,11 @@ async function engineTick() {
 // ---------------------------------------------------------------------------
 // DRY account (real, read-only)
 // ---------------------------------------------------------------------------
-const dryCache = { at: 0, balance: null, positions: null, fills: null, error: null, source: null, host: null, balanceAt: 0, balanceHad: false };
-async function refreshLive(force) {
-  if (!force && Date.now() - dryCache.at < 5000) return dryCache;
-  try {
-    // /portfolio/balance is rate-limited far tighter than the other portfolio
-    // endpoints — under the normal refresh cadence it 429s on every call while
-    // positions/fills succeed, which blanked the whole dry account. Fetch it
-    // only ~every 30s; keep positions/fills fresh every cycle.
-    let bal = null;
-    if (!dryCache.balanceAt || Date.now() - dryCache.balanceAt > 30000) {
-      try { bal = await kalshi.get('/portfolio/balance', { ttlMs: 30000 }); } catch (e) { bal = null; }
-      dryCache.balanceAt = Date.now();  // throttle to one attempt / 30s even on 429
-    }
-    const pos = await kalshi.get('/portfolio/positions', { query: { limit: 200 }, ttlMs: 8000 });
-    let fills = null;
-    try { fills = await kalshi.get('/portfolio/fills', { query: { limit: 200 }, ttlMs: 15000 }); } catch (e) { }
-    dryCache.at = Date.now();
-    if (bal) {
-      dryCache.balance = bal.data;
-      dryCache.source = bal.source;
-      dryCache.host = bal.host;
-      if (!dryCache.balanceHad) { dryCache.balanceHad = true; log('live_balance_first', { raw: bal.data }); }
-    }
-    dryCache.positions = pos.data;
-    dryCache.fills = fills ? fills.data : null;
-    dryCache.error = null;
-  } catch (e) {
-    dryCache.at = Date.now();
-    dryCache.error = String(e.message || e);
-  }
-  return dryCache;
-}
 
 function dryPositions() {
-  const d = dryCache.positions || {};
-  const rows = d.market_positions || [];
-  const events = d.event_positions || [];
+  const d = state.dry.positions || {};
+  const rows = [];
+  const events = [];
   const out = rows.filter(r => Number(r.position_fp) !== 0).map(r => {
     const qty = Math.abs(Number(r.position_fp));
     const exposure = r.market_exposure_dollars != null ? Number(r.market_exposure_dollars) : null;
@@ -637,7 +605,7 @@ function strategyForTicker(ticker) {
   return hit ? hit.name : 'kalshi_manual';
 }
 function dryFillsList() {
-  const d = dryCache.fills || {};
+  const d = state.dry.closed || {};
   const rows = d.fills || [];
   return rows.map(f => {
     const side = String(f.side || f.outcome_side || '').toLowerCase();
@@ -676,7 +644,7 @@ function dryCurve() {
 // ---------------------------------------------------------------------------
 function laneTrades(name) { return state.dry.closed.filter(t => t.strategy === name); }
 function dryTrades(name) {
-  return (dryCache.fills || {}).fills
+  return (state.dry.closed || {}).fills
     ? dryFillsList().filter(t => t.strategy === name)
     : [];
 }
@@ -748,7 +716,7 @@ function tradesStats() {
 }
 
 function modePayload(book) {
-  const dry = dryCache.balance ? dryAccountPayload() : null;
+  const dry = null ? dryAccountPayload() : null;
   const b = 'dry';  // Kai-Mirror is DRY-only: the mode never changes.
   return {
     mode: b,
@@ -765,29 +733,7 @@ function modePayload(book) {
 
 function kalshiBlock(book) {
   const b = book || state.mode || 'dry';
-  if (b === 'dry') {
-    const rows = (dryCache.positions || {}).market_positions || [];
-    const markets = rows.filter(r => Number(r.position) !== 0).map(r => ({
-      ticker: r.ticker, shares: Math.abs(Number(r.position)),
-      exposure: r.market_exposure != null ? Number(r.market_exposure) / 100 : null,
-      traded: r.total_traded != null ? Number(r.total_traded) : null,
-      realized: r.realized_pnl != null ? Number(r.realized_pnl) / 100 : null,
-      fees: r.fees_paid != null ? Number(r.fees_paid) / 100 : null,
-    }));
-    return {
-      markets, events: [],
-      held_count: markets.length,
-      ghost_count: Math.max(0, rows.length - markets.length),
-      market_count: rows.length, event_count: 0,
-      exposure: markets.reduce((a, m) => a + (m.exposure || 0), 0),
-      fees: markets.reduce((a, m) => a + (m.fees || 0), 0),
-      realized: markets.reduce((a, m) => a + (m.realized || 0), 0),
-      cost_basis_known: true,
-      cost_basis: markets.reduce((a, m) => a + (m.exposure || 0), 0),
-      ledger: { sales_realized: null, settlement_realized: null, window_start: null },
-      source: dryCache.source, host: dryCache.host,
-    };
-  }
+  // DRY mode: use paper positions from state.dry, never call real Kalshi account API
   const markets = state.dry.positions.map(p => ({
     ticker: p.market_id, shares: p.side === 'YES' ? p.qty : -p.qty,
     exposure: p.cost, traded: p.qty, realized: null, fees: 0,
@@ -798,7 +744,7 @@ function kalshiBlock(book) {
     exposure: Number(deployed().toFixed(2)), fees: 0, realized: null,
     cost_basis_known: true, cost_basis: Number(deployed().toFixed(2)),
     ledger: { sales_realized: null, settlement_realized: Number(dryRealized().toFixed(2)), window_start: (state.dry.closed[0] || {}).exit_timestamp || null },
-    source: b === 'dry' ? 'dry book (real quotes)' : null, host: null,
+    source: 'dry book (paper positions)', host: null,
   };
 }
 
@@ -821,7 +767,7 @@ function snapshotPayload(book) {
     book: b,
     mode: modePayload(b),
     balance: dry.cash,
-    kalshi_age_sec: dryCache.at ? Math.round((Date.now() - dryCache.at) / 1000) : null,
+    kalshi_age_sec: null ? Math.round((Date.now() - null) / 1000) : null,
     accounts: { dry },
     current: b,
     equity: dry.curve,
@@ -1178,7 +1124,7 @@ async function serveDashboard(route, res) {
   // numbers.
   const book = 'dry';
   const file = path.join(HERE, 'dry-home.html');
-  if (book === 'dry') await refreshLive(false);
+  
   rememberTitles(LANES);
   const snap = snapshotPayload();
   snap.mode = { mode: book };
@@ -1348,11 +1294,12 @@ async function handle(req, res) {
         ls.running = !ls.running;
       }
       ls.started_at = ls.running ? new Date().toISOString() : ls.started_at;
-      ls.stop_reason = ls.running ? '' : 'operator stop';
-      ls.heartbeat = new Date().toISOString();
-      save();
-      broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
-      return json(res, { name, running: ls.running, mode: state.mode, law: 'OPERATOR_LAW_ENFORCED' });
+            ls.stop_reason = ls.running ? '' : 'operator stop';
+            ls.heartbeat = new Date().toISOString();
+            // Synchronous save for operator commands — must persist immediately
+            try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch (e) { }
+            broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
+            return json(res, { name, running: ls.running, mode: state.mode, law: 'OPERATOR_LAW_ENFORCED' });
     }
   if ((m = p.match(/^\/api\/strategy\/([^/]+)\/analysis$/))) {
     const name = decodeURIComponent(m[1]);
@@ -1447,7 +1394,7 @@ async function handle(req, res) {
 
   // --- accounts
   if (p === '/api/accounts') {
-    await refreshLive(false);
+    
     return json(res, { accounts: { dry: dryAccountPayload(), dry: dryAccountPayload() }, current: 'dry', provenance: lastProvenance() });
   }
 
@@ -1494,7 +1441,7 @@ async function handle(req, res) {
     const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
     const perSec = s ? perSecondVol(lane.spot, 900) : null;
     const volWindow = s ? s.points.slice(-20).map(p => p.p) : [];
-    const fills = dryFillsList ? dryFillsList().slice(-20) : [];
+    const fills = [];
     const result = brain.evaluate({
       q, spotPrice: s ? s.price : null, strike: q.strike, tau, perSecVol: perSec,
       volWindow, fills, history: [], quotes: [q], weights: state.signal_weights
@@ -1597,7 +1544,6 @@ async function boot() {
   log('boot', { mode: 'dry', dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
   await pollSpot();
   setInterval(pollSpot, 2000);
-  setInterval(() => { refreshLive(false).catch(() => { }); }, 6000);
   // Keep every lane's series quoted even when no lane is running, so the
   // provenance block on the page always names a dry host and a fresh quote.
   setInterval(async () => {
@@ -1607,7 +1553,7 @@ async function boot() {
     }
   }, 5000);
   setInterval(async () => {
-    try { rememberTitles(LANES); await refreshLive(false); broadcast('snapshot', 'tick'); sseMessage({ e: 'tick', at: new Date().toISOString(), spot_btc: spot['BTC-USD'].price }); } catch (e) { }
+    try { rememberTitles(LANES); broadcast('snapshot', 'tick'); sseMessage({ e: 'tick', at: new Date().toISOString(), spot_btc: spot['BTC-USD'].price }); } catch (e) { }
   }, 3000);
   server.listen(PORT, HOST, () => {
     console.log('Kai-Mirror (DRY) listening on http://' + HOST + ':' + PORT + '/');
