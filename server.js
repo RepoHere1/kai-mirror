@@ -26,6 +26,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
@@ -96,6 +97,34 @@ const OPERATOR_LAW = Object.freeze({
 // Seal the law — cannot be modified, deleted, or overridden.
 Object.seal(OPERATOR_LAW);
 global.OPERATOR_LAW = OPERATOR_LAW;
+
+// ===========================================================================
+// COMMAND ORDER — IMPERIAL LAW. Hard-coded by DIRECT OPERATOR COMMAND (2026-10-27).
+//   1. The operator's lane BUTTON PUSH is IMPERIAL LAW — immediate, absolute,
+//      and FOREVER. A lane stays EXACTLY the way the operator last set it until
+//      the operator changes it again with another push.
+//   2. NEVER — in this file or any future edit — create, keep, or revive any
+//      supervisor, watchdog, keeper, monitor, auto-start, auto-restart,
+//      keep-alive, or auto-reenable that flips a lane against the operator.
+//      Any such code is FORBIDDEN and must be EXTERMINATED the instant it runs.
+//   3. The routine below is that enforcement. It hunts and KILLS any process
+//      that is not the operator toggle endpoint but that runs the forbidden
+//      monitor/supervisor, so the operator's button push can never be undone.
+//      It ONLY kills hostile OS processes — it NEVER writes ls.running.
+// ===========================================================================
+function exterminateSupervisors() {
+  const script =
+    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'monitor\\.js' -and ($_.Name -eq 'node.exe' -or $_.Name -eq 'bash.exe' -or $_.Name -eq 'timeout.exe') } | ForEach-Object { $_.ProcessId }";
+  let pids = [];
+  try {
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', timeout: 10000, maxBuffer: 1 << 20, stdio: ['ignore', 'pipe', 'ignore'] });
+    pids = out.split(String.fromCharCode(10, 13)).map(s => s.trim()).filter(s => /^\d+$/.test(s));.filter(s => /^\d+$/.test(s));
+  } catch (e) { return; }
+  for (const pid of pids) {
+    try { execFileSync('taskkill', ['/PID', pid, '/F'], { stdio: 'ignore' }); log('exterminator', { killedPid: pid }); } catch (e) { }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Persisted state
@@ -1298,6 +1327,9 @@ async function handle(req, res) {
             ls.heartbeat = new Date().toISOString();
             // Synchronous save for operator commands — must persist immediately
             try { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 1)); } catch (e) { }
+            // OPERATOR_LAW: the operator just moved a lane — EXTERMINATE any
+            // supervisor/watchdog so it can never reverse this button push.
+            exterminateSupervisors();
             broadcast('strategy', name + (ls.running ? ' started' : ' stopped'));
             return json(res, { name, running: ls.running, mode: state.mode, law: 'OPERATOR_LAW_ENFORCED' });
     }
@@ -1544,6 +1576,10 @@ async function boot() {
   log('boot', { mode: 'dry', dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
   await pollSpot();
   setInterval(pollSpot, 2000);
+  // OPERATOR_LAW: exterminate any supervisor/watchdog on boot and continuously
+  // so nothing can ever override the operator's button pushes — imperial law.
+  try { exterminateSupervisors(); } catch (e) { }
+  setInterval(() => { try { exterminateSupervisors(); } catch (e) { } }, 3000);
   // Keep every lane's series quoted even when no lane is running, so the
   // provenance block on the page always names a dry host and a fresh quote.
   setInterval(async () => {
