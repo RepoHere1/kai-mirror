@@ -12,8 +12,8 @@
 //
 // DATA POLICY (hard rules, by operator instruction):
 //   * Every chart, stat, tile and table is fed from a REAL production source:
-//       - Kalshi LIVE "hot" API  (primary, for BOTH the live and dry books)
-//       - Kalshi DEMO API        (fallback only; used when live fails)
+//       - Kalshi DRY "hot" API  (primary, for BOTH the dry and dry books)
+//       - Kalshi DEMO API        (fallback only; used when dry fails)
 //       - Coinbase Exchange public ticker (spot prices, no key needed)
 //       - Kilo AI Gateway        (LLM analysis, model auto/free)
 //   * The ONLY simulated thing is DRY-mode *execution*: paper fills taken at the
@@ -75,7 +75,7 @@ const LANE_BY_NAME = new Map(LANES.map(l => [l.name, l]));
 const OPERATOR_LAW = Object.freeze({
   version: '2026-10-27',
   decree: 'Operator button push is immediate absolute law. No supervisor, auto-start, auto-restart, watchdog, or keep-alive may ever contravene.',
-  onlyWritersOfRunning: ['/api/strategy/:name/toggle endpoint', 'kai.ps1 on/off', 'kai-live.ps1 on/off'],
+  onlyWritersOfRunning: ['/api/strategy/:name/toggle endpoint', 'kai.ps1 on/off', 'kai-mirror.ps1 on/off'],
   forbiddenPatterns: ['supervisor', 'auto.start', 'auto.restart', 'keep.alive', 'watchdog', 'resurrect', 'reenable'],
   enforce: function(action, context) {
     const forbidden = this.forbiddenPatterns.some(p => action.toLowerCase().includes(p) || JSON.stringify(context).toLowerCase().includes(p));
@@ -108,13 +108,13 @@ function defaultState() {
     no_lanes_enabled: true,
     all_no: {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
-      live: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
+      dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
     runtime: { clip: 5, min_edge: 0.001, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 30, entry_cooldown_sec: 60 },
     signal_weights: brain.signalStats(),
     signal_outcomes: [],
     lanes: {},
-    live: { positions: [], closed: [], balance: 0, starting_balance: 0, entries: 0, running: false },
+    dry: { positions: [], closed: [], balance: 0, starting_balance: 0, entries: 0, running: false },
     alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
     logs: [],
     booted_at: new Date().toISOString(),
@@ -270,7 +270,7 @@ async function marketsForSeries(series, limit) {
 }
 
 // Pick the contract in a series that is genuinely the one to trade: nearest
-// strike to live spot (for ladders) or the soonest-expiring quotable market.
+// strike to dry spot (for ladders) or the soonest-expiring quotable market.
 // A quote is only usable if the book is coherent: no crossed market, prices
 // inside the exchange's band, and a real size behind the quote. A contract
 // whose strike sits within a dollar of spot flips 15+ points when BTC crosses
@@ -322,16 +322,16 @@ async function quoteForTicker(ticker) {
 // DRY book (the ONLY simulated execution) - real quotes, real settlements
 // ---------------------------------------------------------------------------
 function deployed() {
-  return state.live.positions.reduce((a, p) => a + p.cost, 0);
+  return state.dry.positions.reduce((a, p) => a + p.cost, 0);
 }
-function liveRealized() {
-  return state.live.closed.reduce((a, t) => a + (t.pnl || 0), 0);
+function dryRealized() {
+  return state.dry.closed.reduce((a, t) => a + (t.pnl || 0), 0);
 }
 // Real Kalshi cash, read straight from the /portfolio/balance payload when it
 // has loaded. Returns null when the balance call is rate-limited/absent so the
 // display can fall back to the computed identity instead of inventing a number.
 function realBalanceCash() {
-  const b = liveCache.balance;
+  const b = dryCache.balance;
   if (!b || typeof b !== 'object') return null;
   for (const k of ['balance_available', 'balance_total', 'balance', 'buying_power']) {
     const v = Number(b[k]);
@@ -339,19 +339,19 @@ function realBalanceCash() {
   }
   return null;
 }
-function liveCash() {
+function dryCash() {
   // cash = baseline + realized - deployed  (the dashboard's own identity)
-  return Number((state.live.baseline + liveRealized() - deployed()).toFixed(4));
+  return Number((state.dry.baseline + dryRealized() - deployed()).toFixed(4));
 }
-function liveEquity() {
-  // real balance (if loaded) + live mark-to-market of open positions at the real bid,
+function dryEquity() {
+  // real balance (if loaded) + dry mark-to-market of open positions at the real bid,
   // else the computed identity + mtm.
   let mtm = 0;
-  for (const p of state.live.positions) {
+  for (const p of state.dry.positions) {
     if (p.mark != null) mtm += p.qty * p.mark;
     else mtm += p.cost;
   }
-  return Number(((realBalanceCash() ?? liveCash()) + mtm).toFixed(4));
+  return Number(((realBalanceCash() ?? dryCash()) + mtm).toFixed(4));
 }
 function todayStats(list) {
   const day = new Date().toISOString().slice(0, 10);
@@ -375,20 +375,20 @@ function curveFromClosed(list) {
   const pnl = labels.map(d => { run += byDay.get(d); return Number(run.toFixed(2)); });
   return { labels, pnl };
 }
-function liveAccountPayload() {
-  const closed = state.live.closed;
+function dryAccountPayload() {
+  const closed = state.dry.closed;
   const wins = closed.filter(t => t.pnl > 0).length;
   return {
-    book: 'live',
-    label: 'LIVE account - real money',
-    starting_balance: state.live.starting_balance,
-    baseline: state.live.baseline,
-    cash: realBalanceCash() ?? liveCash(),
-    equity: liveEquity(),
-    realized: Number(liveRealized().toFixed(2)),
-    total_pnl: Number((liveEquity() - state.live.starting_balance).toFixed(2)),
+    book: 'dry',
+    label: 'DRY account - real money',
+    starting_balance: state.dry.starting_balance,
+    baseline: state.dry.baseline,
+    cash: realBalanceCash() ?? dryCash(),
+    equity: dryEquity(),
+    realized: Number(dryRealized().toFixed(2)),
+    total_pnl: Number((dryEquity() - state.dry.starting_balance).toFixed(2)),
     exposure: Number(deployed().toFixed(2)),
-    open_positions: state.live.positions.length,
+    open_positions: state.dry.positions.length,
     closed_trades: closed.length,
     wins, losses: closed.length - wins,
     win_rate: closed.length ? Number((100 * wins / closed.length).toFixed(1)) : 0,
@@ -400,7 +400,7 @@ function liveAccountPayload() {
 function openLivePosition(lane, q, side, price, fair, edge, sigma) {
   const qty = Math.max(1, Math.floor(state.runtime.clip / price));
   const cost = Number((qty * price).toFixed(4));
-  if (liveCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
+  if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
   const tp = Number(Math.min(0.99, price + (price * 2 * state.runtime.stop_loss)).toFixed(3));
   const pos = {
@@ -422,10 +422,10 @@ function openLivePosition(lane, q, side, price, fair, edge, sigma) {
     mark: price,
     opened: new Date().toISOString(),
     close_time: q.close_time,
-    source: q.source || 'live',
+    source: q.source || 'dry',
     host: q.host || kalshi.LIVE_BASE,
   };
-  state.live.positions.push(pos);
+  state.dry.positions.push(pos);
   const ls = laneState(lane.name);
   ls.entries++;
   ls.heartbeat = new Date().toISOString();
@@ -437,9 +437,9 @@ function openLivePosition(lane, q, side, price, fair, edge, sigma) {
 }
 
 function closeLivePosition(pos, exitPrice, reason, result) {
-  const idx = state.live.positions.indexOf(pos);
+  const idx = state.dry.positions.indexOf(pos);
   if (idx === -1) return;
-  state.live.positions.splice(idx, 1);
+  state.dry.positions.splice(idx, 1);
   const proceeds = Number((pos.qty * exitPrice).toFixed(4));
   const pnl = Number((proceeds - pos.cost).toFixed(4));
   const trade = {
@@ -448,7 +448,7 @@ function closeLivePosition(pos, exitPrice, reason, result) {
     proceeds, pnl, exit_reason: reason, result: result || '', hold_seconds: Math.round((Date.now() - new Date(pos.opened).getTime()) / 1000),
     exit_timestamp: new Date().toISOString(), opened: pos.opened,
   };
-  state.live.closed.push(trade);
+  state.dry.closed.push(trade);
   const ls = laneState(pos.strategy);
   ls.trades++;
   if (pnl > 0) ls.wins++; else ls.losses++;
@@ -460,15 +460,15 @@ function closeLivePosition(pos, exitPrice, reason, result) {
 }
 
 // ---------------------------------------------------------------------------
-// LIVE book (real Kalshi order placement)
+// DRY book (real Kalshi order placement)
 // ---------------------------------------------------------------------------
 
 
 async function markLivePositions() {
-  const tickers = Array.from(new Set(state.live.positions.map(p => p.market_id)));
+  const tickers = Array.from(new Set(state.dry.positions.map(p => p.market_id)));
   for (const ticker of tickers) {
     const q = await quoteForTicker(ticker);
-    const held = state.live.positions.filter(p => p.market_id === ticker);
+    const held = state.dry.positions.filter(p => p.market_id === ticker);
     if (!q) continue;
     for (const pos of held) {
       if (q.result === 'yes' || q.result === 'no') {
@@ -514,7 +514,7 @@ async function engineTick() {
     
     // Build params for brain evaluation
     const volWindow = s.points.slice(-20).map(p => p.p);
-    const fills = liveFillsList ? liveFillsList().slice(-20) : [];
+    const fills = dryFillsList ? dryFillsList().slice(-20) : [];
     const allQuotes = (act.open_markets > 0) ? [q] : [];
     
     // Evaluate with ensemble brain
@@ -542,7 +542,7 @@ async function engineTick() {
     const cooldown = Number(state.runtime.entry_cooldown_sec || 60) * 1000;
     if (lastEntry < cooldown) { ls.skips++; ls.last_skip = 'cooldown ' + Math.ceil((cooldown - lastEntry) / 1000) + 's'; continue; }
     
-    const held = (state.mode === 'live' ? state.live.positions : state.live.positions).filter(p => p.strategy === lane.name).length;
+    const held = (state.mode === 'dry' ? state.dry.positions : state.dry.positions).filter(p => p.strategy === lane.name).length;
     if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
     
     const fair = side === 'YES' ? (q.yes_ask + result.edge) : (q.no_ask + result.edge);
@@ -550,7 +550,7 @@ async function engineTick() {
         // Enforce: operator's last button push is absolute law.
         OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
         if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
-    const opened = state.mode === 'live'
+    const opened = state.mode === 'dry'
       ? await openLivePosition(lane, q, side, price, fair, result.edge, perSec)
       : openLivePosition(lane, q, side, price, fair, result.edge, perSec);
     if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
@@ -558,43 +558,43 @@ async function engineTick() {
 }
 
 // ---------------------------------------------------------------------------
-// LIVE account (real, read-only)
+// DRY account (real, read-only)
 // ---------------------------------------------------------------------------
-const liveCache = { at: 0, balance: null, positions: null, fills: null, error: null, source: null, host: null, balanceAt: 0, balanceHad: false };
+const dryCache = { at: 0, balance: null, positions: null, fills: null, error: null, source: null, host: null, balanceAt: 0, balanceHad: false };
 async function refreshLive(force) {
-  if (!force && Date.now() - liveCache.at < 5000) return liveCache;
+  if (!force && Date.now() - dryCache.at < 5000) return dryCache;
   try {
     // /portfolio/balance is rate-limited far tighter than the other portfolio
     // endpoints — under the normal refresh cadence it 429s on every call while
-    // positions/fills succeed, which blanked the whole live account. Fetch it
+    // positions/fills succeed, which blanked the whole dry account. Fetch it
     // only ~every 30s; keep positions/fills fresh every cycle.
     let bal = null;
-    if (!liveCache.balanceAt || Date.now() - liveCache.balanceAt > 30000) {
+    if (!dryCache.balanceAt || Date.now() - dryCache.balanceAt > 30000) {
       try { bal = await kalshi.get('/portfolio/balance', { ttlMs: 30000 }); } catch (e) { bal = null; }
-      liveCache.balanceAt = Date.now();  // throttle to one attempt / 30s even on 429
+      dryCache.balanceAt = Date.now();  // throttle to one attempt / 30s even on 429
     }
     const pos = await kalshi.get('/portfolio/positions', { query: { limit: 200 }, ttlMs: 8000 });
     let fills = null;
     try { fills = await kalshi.get('/portfolio/fills', { query: { limit: 200 }, ttlMs: 15000 }); } catch (e) { }
-    liveCache.at = Date.now();
+    dryCache.at = Date.now();
     if (bal) {
-      liveCache.balance = bal.data;
-      liveCache.source = bal.source;
-      liveCache.host = bal.host;
-      if (!liveCache.balanceHad) { liveCache.balanceHad = true; log('live_balance_first', { raw: bal.data }); }
+      dryCache.balance = bal.data;
+      dryCache.source = bal.source;
+      dryCache.host = bal.host;
+      if (!dryCache.balanceHad) { dryCache.balanceHad = true; log('live_balance_first', { raw: bal.data }); }
     }
-    liveCache.positions = pos.data;
-    liveCache.fills = fills ? fills.data : null;
-    liveCache.error = null;
+    dryCache.positions = pos.data;
+    dryCache.fills = fills ? fills.data : null;
+    dryCache.error = null;
   } catch (e) {
-    liveCache.at = Date.now();
-    liveCache.error = String(e.message || e);
+    dryCache.at = Date.now();
+    dryCache.error = String(e.message || e);
   }
-  return liveCache;
+  return dryCache;
 }
 
-function livePositions() {
-  const d = liveCache.positions || {};
+function dryPositions() {
+  const d = dryCache.positions || {};
   const rows = d.market_positions || [];
   const events = d.event_positions || [];
   const out = rows.filter(r => Number(r.position_fp) !== 0).map(r => {
@@ -636,8 +636,8 @@ function strategyForTicker(ticker) {
   const hit = LANES.find(l => (l.seriesList || []).includes(series) || l.series === series);
   return hit ? hit.name : 'kalshi_manual';
 }
-function liveFillsList() {
-  const d = liveCache.fills || {};
+function dryFillsList() {
+  const d = dryCache.fills || {};
   const rows = d.fills || [];
   return rows.map(f => {
     const side = String(f.side || f.outcome_side || '').toLowerCase();
@@ -655,8 +655,8 @@ function liveFillsList() {
     };
   }).filter(f => f.quantity);
 }
-function liveCurve() {
-  const fills = liveFillsList();
+function dryCurve() {
+  const fills = dryFillsList();
   const byDay = new Map();
   for (const f of fills) {
     const day = String(f.at).slice(0, 10);
@@ -674,10 +674,10 @@ function liveCurve() {
 // ---------------------------------------------------------------------------
 // Strategy cards / stats
 // ---------------------------------------------------------------------------
-function laneTrades(name) { return state.live.closed.filter(t => t.strategy === name); }
-function liveTrades(name) {
-  return (liveCache.fills || {}).fills
-    ? liveFillsList().filter(t => t.strategy === name)
+function laneTrades(name) { return state.dry.closed.filter(t => t.strategy === name); }
+function dryTrades(name) {
+  return (dryCache.fills || {}).fills
+    ? dryFillsList().filter(t => t.strategy === name)
     : [];
 }
 function cards() {
@@ -685,12 +685,12 @@ function cards() {
     const ls = laneState(lane.name);
     const closed = laneTrades(lane.name);
     const wins = closed.filter(t => t.pnl > 0).length;
-    const open = state.live.positions.filter(p => p.strategy === lane.name);
+    const open = state.dry.positions.filter(p => p.strategy === lane.name);
     const equity = curveFor(closed);
     const heartbeatAge = ls.heartbeat ? Math.round((Date.now() - new Date(ls.heartbeat).getTime()) / 1000) : null;
-    const liveOpen = livePositions().filter(p => p.strategy === lane.name);
-    const liveClosed = liveFillsList().filter(t => t.strategy === lane.name);
-    const liveWins = liveClosed.filter(t => (t.price || 0) * t.quantity > 0).length;
+    const dryOpen = dryPositions().filter(p => p.strategy === lane.name);
+    const dryClosed = dryFillsList().filter(t => t.strategy === lane.name);
+    const dryWins = dryClosed.filter(t => (t.price || 0) * t.quantity > 0).length;
     return {
       name: lane.name,
       label: lane.label,
@@ -708,11 +708,11 @@ function cards() {
       mode: state.mode,
       book: state.mode,
       heartbeat: ls.heartbeat,
-      // LIVE book stats (read-only, from real Kalshi fills)
-      live_trades: liveClosed.length,
-      live_win_rate: liveClosed.length ? Number((100 * liveWins / liveClosed.length).toFixed(1)) : 0,
-      live_open: liveOpen.length,
-      live_realized: Number(liveClosed.reduce((a, t) => a + ((t.price || 0) * t.quantity), 0).toFixed(2)),
+      // DRY book stats (read-only, from real Kalshi fills)
+      live_trades: dryClosed.length,
+      live_win_rate: dryClosed.length ? Number((100 * dryWins / dryClosed.length).toFixed(1)) : 0,
+      live_open: dryOpen.length,
+      live_realized: Number(dryClosed.reduce((a, t) => a + ((t.price || 0) * t.quantity), 0).toFixed(2)),
     };
   });
 }
@@ -728,7 +728,7 @@ function curveFor(closed) {
   return { labels, pnl: labels.map(d => { run += byDay.get(d); return Number(run.toFixed(2)); }) };
 }
 function tradesStats() {
-  const closed = state.live.closed;
+  const closed = state.dry.closed;
   const bands = [
     { band: '0.00-0.20', lo: 0, hi: 0.20 }, { band: '0.20-0.40', lo: 0.2, hi: 0.4 },
     { band: '0.40-0.60', lo: 0.4, hi: 0.6 }, { band: '0.60-0.80', lo: 0.6, hi: 0.8 },
@@ -748,25 +748,25 @@ function tradesStats() {
 }
 
 function modePayload(book) {
-  const live = liveCache.balance ? liveAccountPayload() : null;
-  const b = 'live';  // Kai-LIVE is LIVE-only: the mode never changes.
+  const dry = dryCache.balance ? dryAccountPayload() : null;
+  const b = 'dry';  // Kai-Mirror is DRY-only: the mode never changes.
   return {
     mode: b,
-    live: live ? {
-      cash: live.cash, open_positions: live.open_positions, total_pnl: live.total_pnl,
-      portfolio_value: live.portfolio_value, equity: live.equity, realized: live.realized,
-      exposure: live.exposure, closed_trades: live.closed_trades, error: live.error,
+    dry: dry ? {
+      cash: dry.cash, open_positions: dry.open_positions, total_pnl: dry.total_pnl,
+      portfolio_value: dry.portfolio_value, equity: dry.equity, realized: dry.realized,
+      exposure: dry.exposure, closed_trades: dry.closed_trades, error: dry.error,
     } : null,
-    funding: { balance: live ? live.cash : null },
+    funding: { balance: dry ? dry.cash : null },
     no_lanes_enabled: !!state.no_lanes_enabled,
-    live_full: live,
+    live_full: dry,
   };
 }
 
 function kalshiBlock(book) {
   const b = book || state.mode || 'dry';
-  if (b === 'live') {
-    const rows = (liveCache.positions || {}).market_positions || [];
+  if (b === 'dry') {
+    const rows = (dryCache.positions || {}).market_positions || [];
     const markets = rows.filter(r => Number(r.position) !== 0).map(r => ({
       ticker: r.ticker, shares: Math.abs(Number(r.position)),
       exposure: r.market_exposure != null ? Number(r.market_exposure) / 100 : null,
@@ -785,10 +785,10 @@ function kalshiBlock(book) {
       cost_basis_known: true,
       cost_basis: markets.reduce((a, m) => a + (m.exposure || 0), 0),
       ledger: { sales_realized: null, settlement_realized: null, window_start: null },
-      source: liveCache.source, host: liveCache.host,
+      source: dryCache.source, host: dryCache.host,
     };
   }
-  const markets = state.live.positions.map(p => ({
+  const markets = state.dry.positions.map(p => ({
     ticker: p.market_id, shares: p.side === 'YES' ? p.qty : -p.qty,
     exposure: p.cost, traded: p.qty, realized: null, fees: 0,
   }));
@@ -797,7 +797,7 @@ function kalshiBlock(book) {
     market_count: markets.length, event_count: 0,
     exposure: Number(deployed().toFixed(2)), fees: 0, realized: null,
     cost_basis_known: true, cost_basis: Number(deployed().toFixed(2)),
-    ledger: { sales_realized: null, settlement_realized: Number(liveRealized().toFixed(2)), window_start: (state.live.closed[0] || {}).exit_timestamp || null },
+    ledger: { sales_realized: null, settlement_realized: Number(dryRealized().toFixed(2)), window_start: (state.dry.closed[0] || {}).exit_timestamp || null },
     source: b === 'dry' ? 'dry book (real quotes)' : null, host: null,
   };
 }
@@ -809,26 +809,26 @@ function rememberTitles(lanes) {
     if (!res || !res.markets) continue;
     for (const m of res.markets) if (m.title) TITLES[m.ticker] = m.title;
   }
-  for (const p of state.live.positions) if (p.title) TITLES[p.market_id] = p.title;
-  for (const t of state.live.closed) if (t.title) TITLES[t.market_id] = t.title;
+  for (const p of state.dry.positions) if (p.title) TITLES[p.market_id] = p.title;
+  for (const t of state.dry.closed) if (t.title) TITLES[t.market_id] = t.title;
 }
 
 function snapshotPayload(book) {
-  const b = 'live';  // Kai-LIVE is LIVE-only: the mode never changes.
-  const live = liveAccountPayload();
+  const b = 'dry';  // Kai-Mirror is DRY-only: the mode never changes.
+  const dry = dryAccountPayload();
   const prov = lastProvenance();
   return {
     book: b,
     mode: modePayload(b),
-    balance: live.cash,
-    kalshi_age_sec: liveCache.at ? Math.round((Date.now() - liveCache.at) / 1000) : null,
-    accounts: { live },
+    balance: dry.cash,
+    kalshi_age_sec: dryCache.at ? Math.round((Date.now() - dryCache.at) / 1000) : null,
+    accounts: { dry },
     current: b,
-    equity: live.curve,
-    positions: livePositions(),
+    equity: dry.curve,
+    positions: dryPositions(),
     strategy_cards: cards(),
     trades: tradesStats(),
-    data: { live: { win_rate: live.win_rate }, ai_cost_today: 0 },
+    data: { dry: { win_rate: dry.win_rate }, ai_cost_today: 0 },
     kalshi: kalshiBlock(b),
     market_titles: TITLES,
     no_lanes_enabled: !!state.no_lanes_enabled,
@@ -857,7 +857,7 @@ function lastProvenance() {
       host: m ? m.host : null, source: m ? m.source : null,
       fetched_at: m ? new Date(m.at).toISOString() : null, latency_ms: m ? m.ms : null,
       series: 'KXBTC15M',
-      key_id: kalshi.accounts.live.keyId,
+      key_id: kalshi.accounts.dry.keyId,
       url: (m ? m.host : kalshi.LIVE_BASE) + '/markets?series_ticker=KXBTC15M',
     },
     llm: { provider: 'Kilo AI Gateway', model: ENV.KILO_MODEL || 'auto/free', base: ENV.KILO_BASE_URL },
@@ -872,7 +872,7 @@ function lastProvenance() {
 function getAllNoBook() {
   // Return current ALL NO book state (open positions + closed trades + tallies)
   // The NO book runs in its own ledger: state.all_no['dry'] for paper DRY,
-  // state.all_no['live'] for real-money LIVE.
+  // state.all_no['dry'] for real-money DRY.
   const mode = state.mode;
   const book = state.all_no[mode] || { starting_balance: 250, balance: 250, positions: [], closed_trades: [], total_pnl: 0, entries: 0 };
   
@@ -1032,9 +1032,9 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   book.entries++;
   save();
 
-  // In LIVE mode, also post a real Kalshi NO-side order so the ledger and the
+  // In DRY mode, also post a real Kalshi NO-side order so the ledger and the
   // Kalshi book agree. DRY mode stays a pure paper book.
-  if (state.mode === 'live') {
+  if (state.mode === 'dry') {
     postAllNoOrder(position, 'enter');
   }
 
@@ -1083,8 +1083,8 @@ function closeAllNoPosition(position_id, exit_price, exit_reason) {
   save();
   log('all_no_exit', { id: pos.id, market_id: pos.market_id, entry: pos.entry_price, exit: exit_price, pnl: net_pnl, balance_after: book.balance });
 
-  // In LIVE mode, also post a real Kalshi NO-side exit order
-  if (state.mode === 'live') {
+  // In DRY mode, also post a real Kalshi NO-side exit order
+  if (state.mode === 'dry') {
     postAllNoOrder(pos, 'exit', exit_price);
   }
 
@@ -1097,12 +1097,12 @@ function strategyForSeries(series) {
 }
 
 // ---------------------------------------------------------------------------
-// ALL NO MARKETS - Kalshi order placement (LIVE mode only)
+// ALL NO MARKETS - Kalshi order placement (DRY mode only)
 // ---------------------------------------------------------------------------
 async function postAllNoOrder(position, action, exit_price) {
   // Post a real Kalshi NO-side order for the ALL NO MARKETS book.
-  // LIVE mode: real money. DRY mode: never called (book is paper-only).
-  if (state.mode !== 'live') return null;
+  // DRY mode: real money. DRY mode: never called (book is paper-only).
+  if (state.mode !== 'dry') return null;
   try {
     const side = 'NO';
     const qty = position.quantity;
@@ -1122,7 +1122,7 @@ async function postAllNoOrder(position, action, exit_price) {
     const ts = Math.round(Date.now() / 1000);
     const method = 'POST';
     const fullPath = '/trade-api/v2' + route;
-    const signature = sign(kalshi.accounts.live, method, fullPath, ts, 'pss');
+    const signature = sign(kalshi.accounts.dry, method, fullPath, ts, 'pss');
     const res = await kalshi.raw(method, route, body, { 'x-kalshi-ts': String(ts), 'x-kalshi-signature': signature, 'content-type': 'application/json' });
     log('all_no_order', { id: position.id, action, status: res.status, marker });
     return { ok: true, status: res.status, marker };
@@ -1173,22 +1173,22 @@ function readBody(req) {
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
 async function serveDashboard(route, res) {
-  // Kai-LIVE serves exactly one dashboard: live-home.html (the real Kalshi
+  // Kai-Mirror serves exactly one dashboard: dry-home.html (the real Kalshi
   // account). The page says which book it is. The server only fills in the
   // numbers.
-  const book = 'live';
-  const file = path.join(HERE, 'live-home.html');
-  if (book === 'live') await refreshLive(false);
+  const book = 'dry';
+  const file = path.join(HERE, 'dry-home.html');
+  if (book === 'dry') await refreshLive(false);
   rememberTitles(LANES);
   const snap = snapshotPayload();
   snap.mode = { mode: book };
   try {
     let html = fs.readFileSync(file, 'utf8');
-    // Replace the SNAPSHOT placeholder in the page with live data
+    // Replace the SNAPSHOT placeholder in the page with dry data
     const snapshotJson = JSON.stringify(snap);
     const placeholder = 'const SNAPSHOT = {"__KAI_SNAPSHOT_PLACEHOLDER__":true};';
     html = html.replace(placeholder, `const SNAPSHOT = ${snapshotJson};`);
-    // The page's own book wins: a DRY page never claims to be LIVE.
+    // The page's own book wins: a DRY page never claims to be DRY.
     // Only replace data-mode on the body tag, NOT in CSS attribute selectors
     // (the CSS uses data-mode to switch card borders between books).
     html = html.replace(/(<body[^>]*?)data-mode="[^"]*"/, `$1data-mode="${book}"`);
@@ -1219,11 +1219,11 @@ async function handle(req, res) {
 
   if (method === 'OPTIONS') return json(res, { ok: true });
 
-  // --- static pages: Kai-LIVE serves the LIVE book - the ONLY book on this
+  // --- static pages: Kai-Mirror serves the DRY book - the ONLY book on this
   // server - plus the NO-side book. There is no DRY page here and no
   // client-side mode flipping: a page IS a book.
-  if (p === '/' || p === '/index.html' || p === '/dry' || p === '/live' || p === '/live-home.html') {
-    return serveDashboard('/live', res);
+  if (p === '/' || p === '/index.html' || p === '/dry' || p === '/dry' || p === '/dry-home.html') {
+    return serveDashboard('/dry', res);
   }
   if (p === '/all-no-markets') {
     return serveAllNoMarkets(res);
@@ -1242,8 +1242,8 @@ async function handle(req, res) {
     return json(res, {
       ok: true, mode: state.mode, uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
       hosts: { kalshi_live: kalshi.LIVE_BASE, kalshi_demo: kalshi.DEMO_BASE, spot: 'api.exchange.coinbase.com', llm: ENV.KILO_BASE_URL },
-      credentials: { live_key: kalshi.accounts.live.keyId, demo_key: kalshi.accounts.demo.keyId, llm_token: (ENV.KILO_TOKEN || '').slice(0, 12) + '...' },
-      live_balance: liveCash(),
+      credentials: { live_key: kalshi.accounts.dry.keyId, demo_key: kalshi.accounts.demo.keyId, llm_token: (ENV.KILO_TOKEN || '').slice(0, 12) + '...' },
+      live_balance: dryCash(),
     });
   }
   if (p === '/api/provenance') {
@@ -1272,10 +1272,10 @@ async function handle(req, res) {
   }
 
   // --- mode: FIXED. Kai-Mirror is the DRY-only server. There is no mode
-    // switch and no live book. Any attempt to flip modes is refused: live
-    // trading runs on the separate Kai-LIVE server (port 8788).
+    // switch and no dry book. Any attempt to flip modes is refused: dry
+    // trading runs on the separate Kai-Mirror server (port 8787).
     if (p === '/api/mode' && method === 'POST') {
-      return json(res, { error: 'Kai-Mirror is the DRY-only server (port 8787). Mode is fixed to dry. Live trading runs on the separate Kai-LIVE server (port 8788).' }, 403);
+      return json(res, { error: 'Kai-Mirror is the DRY-only server (port 8787). Mode is fixed to dry. Live trading runs on the separate Kai-Mirror server (port 8787).' }, 403);
     }
   if (p === '/api/mode') return json(res, modePayload());
 
@@ -1366,7 +1366,7 @@ async function handle(req, res) {
     const ls = laneState(name);
     const closed = laneTrades(name);
     const wins = closed.filter(t => t.pnl > 0).length;
-    const open = state.live.positions.filter(p2 => p2.strategy === name);
+    const open = state.dry.positions.filter(p2 => p2.strategy === name);
     const rets = closed.map(t => t.pnl);
     const card = cards().find(c => c.name === name);
     const act = await activeQuote(lane);
@@ -1374,7 +1374,7 @@ async function handle(req, res) {
       book: 'dry',
       strategy: {
         name, label: lane.label,
-        description: 'Real ' + (lane.series || 'Kalshi') + ' series vs live ' + (lane.spot || 'n/a') + ' spot. Model fair value is a live-volatility normal CDF over the real strike; entries are taken only when the real ask is below fair by the configured edge. DRY fills are paper at the real quoted price.',
+        description: 'Real ' + (lane.series || 'Kalshi') + ' series vs dry ' + (lane.spot || 'n/a') + ' spot. Model fair value is a dry-volatility normal CDF over the real strike; entries are taken only when the real ask is below fair by the configured edge. DRY fills are paper at the real quoted price.',
         command: 'server.js lane ' + name, running: !!ls.running, pid: null,
         trades: closed.length, win_rate: closed.length ? Number((100 * wins / closed.length).toFixed(1)) : 0,
         realized: Number(rets.reduce((a, b) => a + b, 0).toFixed(2)),
@@ -1400,8 +1400,8 @@ async function handle(req, res) {
   if (p === '/api/recent-trades') {
     const page = Math.max(1, Number(u.searchParams.get('page') || 1));
     const per = Math.max(1, Math.min(200, Number(u.searchParams.get('per_page') || 25)));
-    const book = u.searchParams.get('book') === 'live' ? 'live' : 'dry';
-    const all = state.live.closed.slice().reverse();
+    const book = u.searchParams.get('book') === 'dry' ? 'dry' : 'dry';
+    const all = state.dry.closed.slice().reverse();
     const total = all.length;
     const pages = Math.max(1, Math.ceil(total / per));
     const slice = all.slice((page - 1) * per, page * per);
@@ -1448,7 +1448,7 @@ async function handle(req, res) {
   // --- accounts
   if (p === '/api/accounts') {
     await refreshLive(false);
-    return json(res, { accounts: { dry: liveAccountPayload(), live: liveAccountPayload() }, current: 'dry', provenance: lastProvenance() });
+    return json(res, { accounts: { dry: dryAccountPayload(), dry: dryAccountPayload() }, current: 'dry', provenance: lastProvenance() });
   }
 
   // --- llm
@@ -1473,7 +1473,7 @@ async function handle(req, res) {
   // --- snapshot + stream
   if (p === '/api/snapshot') {
     const b = u.searchParams.get('book');
-    return json(res, snapshotPayload(b === 'live' ? 'live' : (b === 'dry' ? 'dry' : undefined)));
+    return json(res, snapshotPayload(b === 'dry' ? 'dry' : (b === 'dry' ? 'dry' : undefined)));
   }
   if (p === '/api/stream') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
@@ -1494,7 +1494,7 @@ async function handle(req, res) {
     const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
     const perSec = s ? perSecondVol(lane.spot, 900) : null;
     const volWindow = s ? s.points.slice(-20).map(p => p.p) : [];
-    const fills = liveFillsList ? liveFillsList().slice(-20) : [];
+    const fills = dryFillsList ? dryFillsList().slice(-20) : [];
     const result = brain.evaluate({
       q, spotPrice: s ? s.price : null, strike: q.strike, tau, perSecVol: perSec,
       volWindow, fills, history: [], quotes: [q], weights: state.signal_weights
@@ -1506,7 +1506,7 @@ async function handle(req, res) {
 }
 
 function analysisPayload(strategy) {
-  const closed = strategy ? laneTrades(strategy) : state.live.closed;
+  const closed = strategy ? laneTrades(strategy) : state.dry.closed;
   const rets = closed.map(t => t.pnl);
   const wins = closed.filter(t => t.pnl > 0).length;
   const byKey = (fn) => {
@@ -1551,18 +1551,18 @@ function analysisPayload(strategy) {
   };
 }
 
-function liveBookPayload() {
-  const positions = state.live.positions || [];
-  const closed = state.live.closed || [];
+function dryBookPayload() {
+  const positions = state.dry.positions || [];
+  const closed = state.dry.closed || [];
   const wins = closed.filter(t => t.pnl > 0).length;
   const deployed = positions.reduce((a, p) => a + p.cost, 0);
   const realized = closed.reduce((a, t) => a + (t.pnl || 0), 0);
-  const cash = liveCash();
-  const starting = state.live.starting_balance || 0;
+  const cash = dryCash();
+  const starting = state.dry.starting_balance || 0;
   const equity = cash + positions.reduce((a, p) => a + (p.mark != null ? p.qty * p.mark : p.cost), 0);
   return {
-    book: 'live',
-    label: 'LIVE account - real money',
+    book: 'dry',
+    label: 'DRY account - real money',
     starting_balance: starting,
     cash: Number(cash.toFixed(4)),
     equity: Number(equity.toFixed(4)),
@@ -1599,7 +1599,7 @@ async function boot() {
   setInterval(pollSpot, 2000);
   setInterval(() => { refreshLive(false).catch(() => { }); }, 6000);
   // Keep every lane's series quoted even when no lane is running, so the
-  // provenance block on the page always names a live host and a fresh quote.
+  // provenance block on the page always names a dry host and a fresh quote.
   setInterval(async () => {
     for (const lane of LANES) {
       if (!lane.seriesList || !lane.seriesList.length) continue;
@@ -1612,7 +1612,7 @@ async function boot() {
   }, 3000);
   server.listen(PORT, HOST, () => {
     console.log('Kai-Mirror (DRY) listening on http://' + HOST + ':' + PORT + '/');
-    console.log('  kalshi live  :', kalshi.LIVE_BASE);
+    console.log('  kalshi dry  :', kalshi.LIVE_BASE);
     console.log('  kalshi demo  :', kalshi.DEMO_BASE, '(fallback)');
     console.log('  spot         : Coinbase Exchange public ticker');
     console.log('  llm          :', ENV.KILO_BASE_URL, 'model', ENV.KILO_MODEL);

@@ -18,14 +18,14 @@ This document summarizes the Python rewrite of the Kai-Mirror trading dashboard,
 - **Original**: ~369KB `index.html` with complex JavaScript and CSS
 - **Python Version**: Dynamic HTML generation with strategy cards, market data, and real-time updates
 - **Features Preserved**:
-  - Interactive mode switching (DRY/LIVE)
+  - Interactive mode switching (DRY/DRY)
   - Strategy management interface
   - Real-time trading data display
   - Portfolio and performance metrics
   - WebSocket-powered updates
 
-#### LIVE Dashboard (`/live`)
-- **Original**: Alternative dashboard view with live trading features
+#### DRY Dashboard (`/dry`)
+- **Original**: Alternative dashboard view with dry trading features
 - **Python Version**: Simplified interface with real-time market data
 - **Features Preserved**:
   - Live trading interface

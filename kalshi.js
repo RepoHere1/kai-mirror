@@ -1,7 +1,7 @@
 'use strict';
-// Kalshi REST client: RSA-PSS request signing + live-first / demo-fallback.
-// Live ("hot") API is the primary source for BOTH live and dry books; the demo
-// API is only touched when the live call fails (rate limit / outage).
+// Kalshi REST client: RSA-PSS request signing + dry-first / demo-fallback.
+// Live ("hot") API is the primary source for BOTH dry and dry books; the demo
+// API is only touched when the dry call fails (rate limit / outage).
 
 const fs = require('fs');
 const path = require('path');
@@ -39,7 +39,7 @@ function loadEnv(file) {
 const ENV = loadEnv();
 
 const accounts = {
-  live: { keyId: (ENV.KALSHI_LIVE_KEY_ID || '').trim(), pem: (ENV.KALSHI_LIVE_PRIVATE_KEY || '').trim(), base: LIVE_BASE, name: 'live' },
+  dry: { keyId: (ENV.KALSHI_LIVE_KEY_ID || '').trim(), pem: (ENV.KALSHI_LIVE_PRIVATE_KEY || '').trim(), base: LIVE_BASE, name: 'dry' },
   demo: { keyId: (ENV.KALSHI_DEMO_KEY_ID || '').trim(), pem: (ENV.KALSHI_DEMO_PRIVATE_KEY || '').trim(), base: DEMO_BASE, name: 'demo' },
 };
 
@@ -130,14 +130,14 @@ async function get(route, opts) {
   return cached(key, opts.ttlMs || 1500, async () => {
     const started = Date.now();
     try {
-      const data = await raw('live', 'GET', route, opts);
-      return { data, source: 'live', host: LIVE_BASE, ms: Date.now() - started, at: new Date().toISOString() };
+      const data = await raw('dry', 'GET', route, opts);
+      return { data, source: 'dry', host: LIVE_BASE, ms: Date.now() - started, at: new Date().toISOString() };
     } catch (liveErr) {
       try {
         const data = await raw('demo', 'GET', route, opts);
         return { data, source: 'demo', host: DEMO_BASE, ms: Date.now() - started, at: new Date().toISOString(), live_error: String(liveErr.message || liveErr) };
       } catch (demoErr) {
-        const e = new Error('live: ' + (liveErr.message || liveErr) + ' | demo: ' + (demoErr.message || demoErr));
+        const e = new Error('dry: ' + (liveErr.message || liveErr) + ' | demo: ' + (demoErr.message || demoErr));
         e.live_error = String(liveErr.message || liveErr);
         e.demo_error = String(demoErr.message || demoErr);
         throw e;
@@ -148,8 +148,8 @@ async function get(route, opts) {
 
 async function post(route, body) {
   try {
-    const data = await raw('live', 'POST', route, { body });
-    return { data, source: 'live', host: LIVE_BASE };
+    const data = await raw('dry', 'POST', route, { body });
+    return { data, source: 'dry', host: LIVE_BASE };
   } catch (liveErr) {
     const data = await raw('demo', 'POST', route, { body });
     return { data, source: 'demo', host: DEMO_BASE, live_error: String(liveErr.message || liveErr) };

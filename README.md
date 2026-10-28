@@ -7,7 +7,7 @@ This is a complete Python rewrite of the Node.js trading dashboard that converts
 The Kai-Mirror trading dashboard is a sophisticated trading platform that provides:
 
 - **Main DRY trading dashboard** - Simulated paper trading with real market data
-- **Alternative dashboard** - Enhanced trading interface with live features
+- **Alternative dashboard** - Enhanced trading interface with dry features
 - **ALL NO MARKETS page** - NO-side only market strategy page
 
 The original implementation was based on Node.js with real-time WebSocket communication, but this Python version maintains all the core functionality while providing better performance and maintainability.
@@ -16,7 +16,7 @@ The original implementation was based on Node.js with real-time WebSocket commun
 
 ### Core Functionality
 - **Real-time strategy management** - Start/stop trading strategies, monitor performance
-- **Account tracking** - Separate DRY (simulated) and LIVE (real) account views
+- **Account tracking** - Separate DRY (simulated) and DRY (real) account views
 - **WebSocket communication** - Real-time updates for trading signals and market data
 - **REST API endpoints** - Complete API coverage for all trading operations
 - **Persistent state management** - State saved to JSON files
@@ -102,7 +102,7 @@ The Python version provides the same three pages as the original:
    - Account overview
    - Real-time updates
 
-2. **LIVE Dashboard**: `http://127.0.0.1:5000/live`
+2. **DRY Dashboard**: `http://127.0.0.1:5000/dry`
    - Real trading dashboard
    - Live market data
    - Real account balances
@@ -121,7 +121,7 @@ The Python version provides the same three pages as the original:
 - **Analyze performance**: View P&L, win rates, and trade history
 
 #### Account Management
-- **Check balances**: View DRY and LIVE account balances
+- **Check balances**: View DRY and DRY account balances
 - **Monitor positions**: Track open and closed positions
 - **View performance**: Analyze historical performance metrics
 

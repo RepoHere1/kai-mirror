@@ -121,7 +121,7 @@
     .badge.closing{background:rgba(251,191,36,.16);color:var(--amber)}
     .badge.open{background:rgba(96,165,250,.16);color:var(--blue)}
     .badge.dry{background:#262626;color:var(--dim)}
-    .badge.live{background:rgba(248,113,113,.18);color:var(--down)}
+    .badge.dry{background:rgba(248,113,113,.18);color:var(--down)}
     .band{background:rgba(251,191,36,.10)}
     .nolanes-btn{
       background:#0a0a0a;color:#f5f5f5;border:1px solid #d4d4d4;
@@ -156,7 +156,7 @@
       <h1>*NO* LANE MARKETS <span>Â· limit-order *NO* LANE side only</span></h1>
   <div class="modeswitch">
       <a id="modeDry" class="modebtn" href="/">DRY</a>
-      <a id="modeLive" class="modebtn live" href="/live">LIVE</a>
+      <a id="modeDry" class="modebtn dry" href="/dry">DRY</a>
       <a id="allNoBtn" class="modebtn allno" href="/all-no-markets" title="ALL NO MARKETS - NO-side only, maker entries, $250 of its own simulated money">ALL NO</a>
     </div>
       <div class="sub">Kalshi *NO* LANE contracts Â· maker (limit) entries Â· open & closed ledger</div>
@@ -316,7 +316,7 @@ Every row below is a *NO* LANE contract entered with a <b>resting limit order</b
           '<td class="num">' + r.confidence.toFixed(2) + '</td>' +
           '<td>' + (r.expiration ? r.expiration.split('T')[0] : 'â€”') + '</td>' +
           '<td><span class="badge ' + (r.status === 'closing' ? 'closing' : 'open') + '">' + r.status + '</span></td>' +
-          '<td><span class="badge ' + (r.mode === 'live' ? 'live' : 'dry') + '">' + r.mode.toUpperCase() + '</span></td>' +
+          '<td><span class="badge ' + (r.mode === 'dry' ? 'dry' : 'dry') + '">' + r.mode.toUpperCase() + '</span></td>' +
           '<td class="mono">' + (r.timestamp ? r.timestamp.substring(0, 16).replace('T', ' ') : 'â€”') + '</td>' +
           '<td><button class="btn-exit" onclick="promptExit(\'' + r.id + '\', \'' + r.market_id + '\')">EXIT</button></td>' +
           '</tr>'
@@ -348,7 +348,7 @@ Every row below is a *NO* LANE contract entered with a <b>resting limit order</b
           '<td class="num ' + (r.kelly > 0 ? 'up' : 'flat') + '">' + (r.kelly * 100).toFixed(2) + '%</td>' +
           '<td class="num">' + r.fee_paid.toFixed(3) + '</td>' +
           '<td>' + (r.exit_reason || 'â€”') + '</td>' +
-          '<td><span class="badge ' + (r.mode === 'live' ? 'live' : 'dry') + '">' + r.mode.toUpperCase() + '</span></td>' +
+          '<td><span class="badge ' + (r.mode === 'dry' ? 'dry' : 'dry') + '">' + r.mode.toUpperCase() + '</span></td>' +
           '<td class="mono">' + (r.entry_timestamp ? r.entry_timestamp.substring(0, 16).replace('T', ' ') : 'â€”') + '</td>' +
           '<td class="mono">' + (r.exit_timestamp ? r.exit_timestamp.substring(0, 16).replace('T', ' ') : 'â€”') + '</td>' +
           '</tr>'

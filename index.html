@@ -3,16 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kai-LIVE - LIVE Trading Dashboard</title>
-<!-- Favicon is green for the LIVE book. The
+<title>Kai-Mirror - DRY Trading Dashboard</title>
+<!-- Favicon is green for the DRY book. The
      letter still distinguishes L vs D. -->
 <link rel="icon" id="favicon" href="data:image/svg+xml,&lt;svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22&gt;&lt;rect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%232ee6a8%22/&gt;&lt;text x=%2216%22 y=%2223%22 font-size=%2219%22 font-weight=%22bold%22 text-anchor=%22middle%22 fill=%22%23000%22&gt;D&lt;/text&gt;&lt;/svg&gt;">
 <style>
 :root{
   --bg:#080b12; --panel:#0f1420; --panel2:#141b2a; --line:#1f2937; --line2:#2b3648;
   --fg:#e6edf6; --dim:#b8cce0; --faint:#5b6a80;
-  --up:#2ee6a8; --down:#a10000; --live:#8a0303; --live-bg:rgba(138,3,3,.20); --blue:#4d9fff; --amber:#ffb454; --violet:#a78bfa;
-  --blood:#a10000;  /* the LIVE-mode warning red: button word + flag border */
+  --up:#2ee6a8; --down:#a10000; --dry:#8a0303; --dry-bg:rgba(138,3,3,.20); --blue:#4d9fff; --amber:#ffb454; --violet:#a78bfa;
+  --blood:#a10000;  /* the DRY-mode warning red: button word + flag border */
   --r:14px; --shadow:0 1px 0 rgba(255,255,255,.03) inset, 0 8px 30px rgba(0,0,0,.45);
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -29,7 +29,7 @@ body{
 .wrap{max-width:1400px;margin:0 auto}
 
 /* ---------- header ----------
-   ONE row, left to right: logo + wordmark | mode flag + DRY/LIVE | host | stamp.
+   ONE row, left to right: logo + wordmark | mode flag + DRY/DRY | host | stamp.
    The stamp is pushed hard right with margin-left:auto so it stays the last
    thing on the line even when the middle cells resize. The mode control sits
    immediately right of the wordmark rather than in its own stacked column, so
@@ -64,7 +64,7 @@ h1 span{color:var(--dim);font-weight:400}
   .stamp{margin-left:0}
 }
 
-/* DRY / LIVE switch - the highest-stakes control on the page, so it is the
+/* DRY / DRY switch - the highest-stakes control on the page, so it is the
    most prominent thing in the header and colour-coded rather than subtle. */
 .modeswitch{display:flex;gap:0;border-radius:10px;overflow:hidden;border:1px solid var(--line2)}
 .modebtn{
@@ -73,9 +73,9 @@ h1 span{color:var(--dim);font-weight:400}
 }
 .modebtn:hover{background:rgba(255,255,255,.07)}
 .modebtn.on{background:rgba(46,230,168,.16);color:var(--up);box-shadow:inset 0 -2px 0 var(--up)}
-/* OPERATOR ORDER: when LIVE is the active book the button's word is BLOOD
+/* OPERATOR ORDER: when DRY is the active book the button's word is BLOOD
    RED - the same alarm the flag carries - not the shared green. */
-.modebtn.live.on{background:rgba(161,0,0,.20);color:var(--blood);box-shadow:inset 0 -2px 0 var(--blood);text-shadow:0 0 10px rgba(161,0,0,.55)}
+.modebtn.dry.on{background:rgba(161,0,0,.20);color:var(--blood);box-shadow:inset 0 -2px 0 var(--blood);text-shadow:0 0 10px rgba(161,0,0,.55)}
 .modebtn:disabled{opacity:.5;cursor:not-allowed}
 /* ALL NO is a link, not a button, so it needs to inherit the SAME box: same
    padding, weight, tracking and radius-matched ends, or it reads as a stray
@@ -90,8 +90,8 @@ a.modebtn{display:inline-flex;align-items:center;text-decoration:none;line-heigh
 .modebtn.nolanes:hover{background:rgba(255,255,255,.07)}
 
 /* ---------- Mode is a whole-page state, not a badge you have to find ----------
-   LIVE and DRY now share the same clean green palette (DRY was the visually
-   superior read). The difference is the frame: DRY gets the green frame, LIVE
+   DRY and DRY now share the same clean green palette (DRY was the visually
+   superior read). The difference is the frame: DRY gets the green frame, DRY
    gets a thin red frame around EVERY card so real-money is unmistakable without
    tinting the whole page red. */
 body::before{
@@ -101,17 +101,17 @@ body::before{
   transition:border-color .18s ease, box-shadow .18s ease;
 }
 body[data-mode="dry"]{--mode-color:var(--up);--mode-glow:rgba(46,230,168,.32)}
-body[data-mode="live"]{--mode-color:var(--down);--mode-glow:rgba(161,0,0,.32)}
+body[data-mode="dry"]{--mode-color:var(--down);--mode-glow:rgba(161,0,0,.32)}
 /* Green border on every card when DRY - simulated money, clean frame */
 body[data-mode="dry"] .card{border:1px solid var(--up)}
 body[data-mode="dry"] .card:hover{border-color:var(--up)}
 body[data-mode="dry"] .tile{border:1px solid var(--up)}
-/* Red border on every card when LIVE - real money is leaving the account. */
-body[data-mode="live"] .card{border:1px solid var(--down)}
-body[data-mode="live"] .card:hover{border-color:var(--down)}
-body[data-mode="live"] .tile{border:1px solid var(--down)}
+/* Red border on every card when DRY - real money is leaving the account. */
+body[data-mode="dry"] .card{border:1px solid var(--down)}
+body[data-mode="dry"] .card:hover{border-color:var(--down)}
+body[data-mode="dry"] .tile{border:1px solid var(--down)}
 /* The logo keeps its subtle red accent (it is the brand). */
-body[data-mode="live"] .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 6px 20px rgba(43,108,255,.35)}
+body[data-mode="dry"] .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 6px 20px rgba(43,108,255,.35)}
 body[data-mode="dry"]  .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:0 0 0 1px rgba(0,0,0,.55), 0 6px 20px rgba(43,108,255,.35)}
 
 .modeflag{
@@ -121,9 +121,9 @@ body[data-mode="dry"]  .brand .logo{border-color:rgba(77,159,255,.4);box-shadow:
   padding:6px 15px;border-radius:10px;border:2px solid currentColor;
   box-shadow:0 0 0 1px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.35);
 }
-/* OPERATOR ORDER: the LIVE MODE flag goes blood red with a red border when
-   the book is LIVE - text, border and glow all in the alarm colour. */
-.modeflag.live{color:var(--blood);background:rgba(161,0,0,.16);border-color:var(--blood);box-shadow:0 0 0 1px rgba(0,0,0,.35),0 4px 14px rgba(161,0,0,.45)}
+/* OPERATOR ORDER: the DRY MODE flag goes blood red with a red border when
+   the book is DRY - text, border and glow all in the alarm colour. */
+.modeflag.dry{color:var(--blood);background:rgba(161,0,0,.16);border-color:var(--blood);box-shadow:0 0 0 1px rgba(0,0,0,.35),0 4px 14px rgba(161,0,0,.45)}
 .modeflag .dot{width:9px;height:9px}
 .orbitring{display:none}
 .url{
@@ -327,16 +327,16 @@ button.loading.yellow::after {
 <div class="wrap">
 
 <header>
-  <!-- One row: logo + wordmark, then the mode flag + DRY/LIVE switch, then the
+  <!-- One row: logo + wordmark, then the mode flag + DRY/DRY switch, then the
        host, then the render stamp hard right. Everything used to sit in a
        right-hand column stacked three deep, which pushed the mode control away
        from the name and made the header two visual bands on a wide screen. -->
   <div class="brand">
     <div class="logo" aria-hidden="true">
-      <img src="/static/logo.png" alt="Kai-LIVE" width="34" height="34" style="display:block">
+      <img src="/static/logo.png" alt="Kai-Mirror" width="34" height="34" style="display:block">
     </div>
     <div class="brandtext">
-      <h1>Kai-LIVE <span>&middot; LIVE trading dashboard</span></h1>
+      <h1>Kai-Mirror <span>&middot; DRY trading dashboard</span></h1>
       <div class="sub">LLM-driven Kalshi automation &middot; real money &middot; multi-strategy</div>
     </div>
   </div>
@@ -344,19 +344,19 @@ button.loading.yellow::after {
        buttons, so the mode and the control that changes it read together
        instead of the flag floating above them. -->
   <div class="moderow">
-    <!-- Unmistakable state flag. LIVE: brighter red fill, white text, thin
+    <!-- Unmistakable state flag. DRY: brighter red fill, white text, thin
          yellow border, silver shimmer. No blinking, no orbiting beacon. -->
-    <div id="modeFlag" class="modeflag live">
+    <div id="modeFlag" class="modeflag dry">
       <span class="dot"></span>
-      <span id="modeFlagText">LIVE MODE</span>
+      <span id="modeFlagText">DRY MODE</span>
     </div>
-    <!-- LIVE switch. ALL NO MARKETS sits in the SAME control group with the
-         SAME styling: it is the second book of the two on Kai-LIVE, it opens
+    <!-- DRY switch. ALL NO MARKETS sits in the SAME control group with the
+         SAME styling: it is the second book of the two on Kai-Mirror, it opens
          its own page, and it must not read as a stray link parked outside the
-         control it belongs with. There is no DRY button: Kai-LIVE is the
-         LIVE-only server. -->
+         control it belongs with. There is no DRY button: Kai-Mirror is the
+         DRY-only server. -->
     <div class="modeswitch">
-      <a id="modeLive" class="modebtn live on" href="/live">LIVE</a>
+      <a id="modeDry" class="modebtn dry on" href="/dry">DRY</a>
       <a id="allNoBtn" class="modebtn allno" href="/all-no-markets" title="ALL NO MARKETS - NO-side only, maker entries, $250 of its own simulated money">ALL NO</a>
     </div>
   </div>
@@ -408,7 +408,7 @@ button.loading.yellow::after {
   
   
   <div class="tile">
-    <div class="k">Strategies live</div>
+    <div class="k">Strategies dry</div>
     <div class="v" id="tRunning">9</div>
     <div class="s">of 9 available</div>
   </div>
@@ -435,7 +435,7 @@ button.loading.yellow::after {
 <div class="panel" style="margin-bottom:12px">
   <div class="ph" style="cursor:pointer" onclick="toggleLlmUsage()">
     <h2>OpenRouter key usage &mdash; what is actually consuming it</h2>
-    <span class="note"><span id="llmToggle" style="cursor:pointer;font-weight:600">show</span> &middot; lifetime, never reset &middot; LIVE book only (one key)</span>
+    <span class="note"><span id="llmToggle" style="cursor:pointer;font-weight:600">show</span> &middot; lifetime, never reset &middot; DRY book only (one key)</span>
   </div>
   <div class="pb" id="llmUsageBodyWrap" style="display:none">
     <div class="cstats" style="grid-template-columns:repeat(auto-fit,minmax(100px,1fr));margin:0 0 12px">
@@ -452,7 +452,7 @@ button.loading.yellow::after {
     <p class="note" style="margin-top:10px;color:var(--faint);font-size:11px">
       "Tracked cost" is the cost the client computes per call; the "AI spend
       today" tile above resets every deploy and under-reports. This table is
-      the lifetime log and does not reset &mdash; one key, this LIVE book's
+      the lifetime log and does not reset &mdash; one key, this DRY book's
       calls only.
     </p>
   </div>
@@ -695,9 +695,9 @@ button.loading.yellow::after {
 </div>
 
 <!-- ============ feeds + account ============ -->
-<!-- Sits directly under the strategy cards and above the LIVE account. The feed
+<!-- Sits directly under the strategy cards and above the DRY account. The feed
      tells you what the market is doing right now; the account tells you what the
-     book did about it. That order reads better than burying the live picture
+     book did about it. That order reads better than burying the dry picture
      under three panels of history. Collapsible because the numbers keep ticking
      and the panel is tall. -->
 <div class="panel" id="feedsPanel" style="margin-bottom:12px">
@@ -742,7 +742,7 @@ button.loading.yellow::after {
 
       <div class="card" style="cursor:default" id="accountCard">
         <div class="ctop">
-          <div><div class="clabel" id="acctLabel">LIVE account — real Kalshi</div><div class="mono cname">live book</div></div>
+          <div><div class="clabel" id="acctLabel">DRY account — real Kalshi</div><div class="mono cname">dry book</div></div>
           <span class="pill ok" id="acctPill">DRY</span>
         </div>
         <div class="cchart" style="height:130px"><canvas id="accountChart"></canvas></div>
@@ -758,9 +758,9 @@ button.loading.yellow::after {
       </div>
     </div>
     <p style="color:var(--faint);font-size:11.5px;margin-top:10px">
-      Up/Down prices are Kalshi&#39;s own quotes for the next 15-minute contract, polled live. Settlement is the 60-second average of CF Benchmarks BRTI, so spot is a proxy for it - the comparison is measured, not assumed.
+      Up/Down prices are Kalshi&#39;s own quotes for the next 15-minute contract, polled dry. Settlement is the 60-second average of CF Benchmarks BRTI, so spot is a proxy for it - the comparison is measured, not assumed.
       The contract resolves on the 60-second average of <b>CF Benchmarks BRTI</b> against the
-      previous window, so live spot is a <b>proxy</b> for the settlement value, not the value itself.
+      previous window, so dry spot is a <b>proxy</b> for the settlement value, not the value itself.
       Spot vs target right now:
       <b class="mono">+72.31</b>
     </p>
@@ -811,23 +811,23 @@ button.loading.yellow::after {
 
 <!-- ============ funding ============ -->
 <div class="row two">
-  <!-- LIVE: the real account, real balance, real money. -->
+  <!-- DRY: the real account, real balance, real money. -->
   <div class="panel">
     <div class="ph">
-      <h2>LIVE account &mdash; real Kalshi</h2>
+      <h2>DRY account &mdash; real Kalshi</h2>
       <span class="note">real money</span>
     </div>
     <div class="pb">
       <dl class="kv">
         <dt>API connection</dt>
-        <dd><span class="pill ok" id="liveConnPill">connected</span></dd>
-        <dt>Available balance</dt><dd id="liveBalance">$0.00</dd>
-        <dt>Portfolio value</dt><dd id="livePortfolio">-</dd>
-        <dt>Open positions</dt><dd id="liveOpenPos">-</dd>
-        <dt>Realized</dt><dd id="liveRealized">-</dd>
-        <dt>Exposure</dt><dd id="liveExposure">-</dd>
+        <dd><span class="pill ok" id="dryConnPill">connected</span></dd>
+        <dt>Available balance</dt><dd id="dryBalance">$0.00</dd>
+        <dt>Portfolio value</dt><dd id="dryPortfolio">-</dd>
+        <dt>Open positions</dt><dd id="dryOpenPos">-</dd>
+        <dt>Realized</dt><dd id="dryRealized">-</dd>
+        <dt>Exposure</dt><dd id="dryExposure">-</dd>
         <dt>Can fund an order</dt>
-        <dd><span class="pill" id="liveFundPill">no</span></dd>
+        <dd><span class="pill" id="dryFundPill">no</span></dd>
       </dl>
 
       <p class="note" style="margin-top:10px;color:var(--faint);font-size:11px">
@@ -840,10 +840,10 @@ button.loading.yellow::after {
 </div>
 
 <!-- ============ Kalshi account ============ -->
-<!-- LIVE ONLY. This panel is real money: real positions, real P&L, real fees.
+<!-- DRY ONLY. This panel is real money: real positions, real P&L, real fees.
      Rendering it while the switch reads DRY put the production account's
      positions in the middle of a page whose every other number was simulated,
-     which is precisely the DRY/LIVE blur this page is supposed to make
+     which is precisely the DRY/DRY blur this page is supposed to make
      impossible. A DRY page now contains no real-account figures at all. -->
 <div class="panel" style="margin-bottom:12px">
     <div class="ph">
@@ -1309,7 +1309,7 @@ button.loading.yellow::after {
   <div class="ph"><h2>What this system does</h2><span class="note">the trading pipeline</span></div>
   <div class="pb">
     <p style="color:var(--dim);font-size:12.5px;margin-bottom:10px">
-      Kai-LIVE scans prediction markets, asks an LLM whether each contract is mispriced,
+      Kai-Mirror scans prediction markets, asks an LLM whether each contract is mispriced,
       sizes a position with fractional Kelly sizing, then manages exits with stop-loss,
       take-profit and time-based rules. Every scan is recorded in SQLite &mdash; that is what
       the numbers on this page are read from.
@@ -1323,7 +1323,7 @@ button.loading.yellow::after {
     </ol>
     <div class="bar" style="margin-top:12px">
       <span class="tag">python cli.py run --paper</span>
-      <span class="tag">--live</span>
+      <span class="tag">--dry</span>
       <span style="font-size:11.5px;color:var(--faint)">Live trading additionally needs <code>LIVE_TRADING_ENABLED=true</code>.</span>
     </div>
   </div>
@@ -1494,7 +1494,7 @@ button.loading.yellow::after {
   </div>
 </div>
 
-<footer>Kai-LIVE &middot; prediction-market automation &middot; not financial advice</footer>
+<footer>Kai-Mirror &middot; prediction-market automation &middot; not financial advice</footer>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -1510,7 +1510,7 @@ const esc = v => String(v == null ? '' : v);
 let recentTradesPage = 1;
 let recentTradesRequest = 0;
 
-// --- live event feed ---
+// --- dry event feed ---
 const feed = [];
 function note(msg) {
   feed.unshift('[' + new Date().toLocaleTimeString() + '] ' + msg);
@@ -1530,7 +1530,7 @@ es.addEventListener('snapshot', () => { refresh(); });
 es.onerror = () => note('stream disconnected - retrying...');
 
 // --- snapshot refresh ---
-// Re-paints the live panels in place from the same payload the server rendered,
+// Re-paints the dry panels in place from the same payload the server rendered,
 // so an open tab tracks Kalshi without a reload.
 function rows(cells, emptyMsg, colspan) {
   if (!cells.length) return '<tr><td colspan="' + colspan + '" class="empty">' + emptyMsg + '</td></tr>';
@@ -1548,7 +1548,7 @@ async function loadRecentTrades(page) {
   const requestId = ++recentTradesRequest;
   const requestedPage = Math.max(1, Number.parseInt(page, 10) || 1);
   try {
-    const response = await fetch('/api/recent-trades?book=live&page=' + requestedPage + '&per_page=25');
+    const response = await fetch('/api/recent-trades?book=dry&page=' + requestedPage + '&per_page=25');
     const data = await response.json().catch(() => ({}));
     if (requestId !== recentTradesRequest) return;
     if (!response.ok || data.error) {
@@ -1668,39 +1668,39 @@ function paint(s) {
 
   const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
 
-  // The headline tiles are written from this server's OWN LIVE book. Kai-LIVE
-  // is the LIVE-only server: there is no other book here, so no tile can ever
+  // The headline tiles are written from this server's OWN DRY book. Kai-Mirror
+  // is the DRY-only server: there is no other book here, so no tile can ever
   // leak another book's numbers.
 
-  // --- LIVE headline tiles: always updated from the LIVE book ---
-  const live = s.accounts && s.accounts.live || {};
+  // --- DRY headline tiles: always updated from the DRY book ---
+  const dry = s.accounts && s.accounts.dry || {};
   const setLive = (id, v) => { const el = $(id); if (el) el.textContent = v; };
   setLive('tBalance', s.balance == null ? '-' : money(s.balance));
-  setLive('tLivePos', live.open_positions || 0);
-  setLive('tExposure', money(live.exposure || 0));
-  setLive('tKalshiPnl', money(live.realized || 0));
+  setLive('tLivePos', dry.open_positions || 0);
+  setLive('tExposure', money(dry.exposure || 0));
+  setLive('tKalshiPnl', money(dry.realized || 0));
   const kr = document.getElementById('tKalshiPnl');
-  if (kr) kr.className = 'v ' + sgn(live.realized || 0);
+  if (kr) kr.className = 'v ' + sgn(dry.realized || 0);
   setLive('tKalshiPnlNote',
-    'sales ' + money((live.fills || []).filter(f => f.action === 'sell').reduce((a, f) => a + (f.price || 0) * f.quantity, 0)) +
-    ' · settled ' + money(live.realized || 0) +
-    ' · ' + (live.closed_trades || 0) + ' closed trades');
+    'sales ' + money((dry.fills || []).filter(f => f.action === 'sell').reduce((a, f) => a + (f.price || 0) * f.quantity, 0)) +
+    ' · settled ' + money(dry.realized || 0) +
+    ' · ' + (dry.closed_trades || 0) + ' closed trades');
   // Also update the account panel stats
   const acctEq = $('acctEquity');
   if (acctEq) acctEq.textContent = money(s.balance == null ? 0 : s.balance);
   const fBal = $('fBalance');
   if (fBal) fBal.textContent = money(s.balance == null ? 0 : s.balance);
   const fReal = $('fRealized');
-  if (fReal) fReal.textContent = money(live.realized || 0);
+  if (fReal) fReal.textContent = money(dry.realized || 0);
   const fClosed = $('fClosed');
-  if (fClosed) fClosed.textContent = live.closed_trades || 0;
+  if (fClosed) fClosed.textContent = dry.closed_trades || 0;
   const fWin = $('fWinRate');
-  if (fWin) fWin.textContent = (live.win_rate || 0) + '%';
+  if (fWin) fWin.textContent = (dry.win_rate || 0) + '%';
 
-  if (s.mode && s.mode.mode === 'live') {
+  if (s.mode && s.mode.mode === 'dry') {
     set('tBalance', s.balance == null ? '-' : money(s.balance));
     // Freshness truth under the balance: a number with no age is how a dead
-    // $0.29 reads as the live truth forever. Over 3 minutes old means the
+    // $0.29 reads as the dry truth forever. Over 3 minutes old means the
     // Kalshi sync is failing, and the errors panel says why.
     var ageEl = $('tBalanceAge');
     if (ageEl) {
@@ -1736,20 +1736,20 @@ function paint(s) {
       ' Â· fees ' + money(k.fees) +
       (led.window_start ? ' Â· since ' + String(led.window_start).slice(0, 10) : ''));
 
-    // The LIVE funding card on this page: the real production account.
-    const lv = (s.accounts && s.accounts.live) || {};
-    set('liveBalance', money(lv.cash));
-    set('livePortfolio', money(lv.portfolio_value));
-    set('liveOpenPos', lv.open_positions == null ? '-' : lv.open_positions);
-    set('liveRealized', money(lv.realized));
-    set('liveExposure', money(lv.exposure));
-    const fp = $('liveFundPill');
+    // The DRY funding card on this page: the real production account.
+    const lv = (s.accounts && s.accounts.dry) || {};
+    set('dryBalance', money(lv.cash));
+    set('dryPortfolio', money(lv.portfolio_value));
+    set('dryOpenPos', lv.open_positions == null ? '-' : lv.open_positions);
+    set('dryRealized', money(lv.realized));
+    set('dryExposure', money(lv.exposure));
+    const fp = $('dryFundPill');
     if (fp) {
       const funded = Number(lv.cash || 0) >= 1;
       fp.className = 'pill ' + (funded ? 'ok' : 'no');
       fp.textContent = funded ? 'yes' : 'no';
     }
-    const cp = $('liveConnPill');
+    const cp = $('dryConnPill');
     if (cp) {
       const bad = !!lv.error;
       cp.className = 'pill ' + (bad ? 'no' : 'ok');
@@ -1802,7 +1802,7 @@ function paintCards(cards) {
     if (card) card.classList.toggle('hot', !!c.running);
     const pill = $('pill-' + c.name);
     if (pill) {
-      // Constant live proof: running means the strategy's own process stamped
+      // Constant dry proof: running means the strategy's own process stamped
       // a heartbeat this cycle - not merely that a pid exists. A stuck
       // strategy (pid alive, no recent heartbeat) is named as such.
       if (c.stuck) {
@@ -1829,7 +1829,7 @@ function paintCards(cards) {
 
 async function refresh() {
   try {
-    paint(await fetch('/api/snapshot?book=live').then(r => r.json()));
+    paint(await fetch('/api/snapshot?book=dry').then(r => r.json()));
     drawChart();
     // Keep an open detail view current without yanking the page around.
     if (openName) openStrategy(openName, true);
@@ -1897,7 +1897,7 @@ async function refreshLlmUsage() {
   ).join('');
 }
 
-// --- DRY / LIVE mode -----------------------------------------------------
+// --- DRY / DRY mode -----------------------------------------------------
 // The write token is embedded server-side so the controls work without a
 // prompt. WARNING: this dashboard is on a public hostname, so anyone who can
 // load the page can also read this value out of view-source and therefore use
@@ -1915,7 +1915,7 @@ function authHeaders(extra) {
 
 
 // Toggle the NO LANES ON/OFF switch. Persisted to runtime_config so both the
-// DRY/LIVE dashboard and the ALL NO MARKETS page see the same state. The button
+// DRY/DRY dashboard and the ALL NO MARKETS page see the same state. The button
 // is black by default and turns YELLOW when ON.
 async function toggleNoLanes() {
   try {
@@ -1990,7 +1990,7 @@ function money(v) { return '$' + Number(v || 0).toFixed(2); }
 
 // One function owns every mode indicator: frame colour, body attribute, flag
 // text, button state, title and favicon. They cannot drift apart.
-let lastMode = document.body.dataset.mode || 'live';// --- controls ---
+let lastMode = document.body.dataset.mode || 'dry';// --- controls ---
 async function toggleStrategy(name, quiet, desiredState) {
   const btn = document.getElementById('btn-' + name);
   let wantedRunning;
@@ -2105,7 +2105,7 @@ function drawChart() {
   });
 }
 
-// --- live feeds: BTC spot, Kalshi ladder, account curve ---
+// --- dry feeds: BTC spot, Kalshi ladder, account curve ---
 // Drawn from whatever the server has cached, then polled. Nothing here invents
 // a number: an empty series renders "waiting" rather than a flat line that reads
 // like a real result.
@@ -2168,7 +2168,7 @@ function paintMarket(md) {
   const pill = $('spotPill');
   if (pill) {
     pill.className = 'pill ' + (spot.fresh ? 'ok' : 'warn');
-    pill.textContent = spot.fresh ? 'live' : (spot.price ? 'stale' : 'waiting');
+    pill.textContent = spot.fresh ? 'dry' : (spot.price ? 'stale' : 'waiting');
   }
   const spotTrend = trend(pts.map(function (p) { return p.p; }));
   drawFeed('spotChart', pts.map(p => hhmmss(p.t)), [{
@@ -2228,7 +2228,7 @@ function paintMarket(md) {
 
   const lead = md.lead || {};
   $('feedNote').textContent = lead.usable
-    ? 'streaming Â· ' + (lead.series || 'KXBTC15M') + ' live'
+    ? 'streaming Â· ' + (lead.series || 'KXBTC15M') + ' dry'
     : (k.error ? 'streaming Â· Kalshi: ' + k.error : 'streaming');
 }
 
@@ -2536,7 +2536,7 @@ async function startAllLive() {
     const names = (SNAPSHOT.strategy_cards || []).filter(c => !c.running).map(c => c.name);
     if (!names.length) { note('all lanes already running'); return; }
     for (const n of names) await toggleStrategy(n, true, true);
-    note('LIVE started: ' + names.join(', '));
+    note('DRY started: ' + names.join(', '));
     refresh();
   } finally {
     if (btn) { btn.classList.remove('loading'); btn.classList.remove('yellow'); }
@@ -2546,7 +2546,7 @@ async function startAllLive() {
 async function stopAll() {
   const names = (SNAPSHOT.strategy_cards || []).filter(c => c.running).map(c => c.name);
 
-  // Find the "Stop all" button (not the LIVE kill button) - it says "Stop all" onclick
+  // Find the "Stop all" button (not the DRY kill button) - it says "Stop all" onclick
   const stopAllBtn = Array.from(document.querySelectorAll('button')).find(b =>
     b.textContent.trim() === 'Stop all' && b.onclick.toString().includes('stopAll')
   );
@@ -2575,7 +2575,7 @@ async function stopAll() {
 // this codebase. Stop all (above) is the only mass-stop, and it is a burst of
 // operator toggles. A lane goes down only when the operator tells it to, and it
 // stays down until the operator starts it again. Nothing resurrects a lane.
-// Collapse the live feed panel. It is tall and its numbers tick continuously,
+// Collapse the dry feed panel. It is tall and its numbers tick continuously,
 // so it earns the right to be folded away once you have read it.
 function toggleFeeds() {
   const body = $('feedsBody');
@@ -2605,13 +2605,13 @@ function toggleFeeds() {
 // threw - which aborted this whole script *before* the feed polling below was
 // registered. The result was a page whose prices stayed on their hardcoded
 // "connecting..." / "--" defaults forever even though /api/marketdata was
-// serving live data the whole time.
+// serving dry data the whole time.
 //
 // So: register the pollers first, make every chart call conditional, and run
 // the renderers independently so one failure cannot silence the rest.
 const CHARTS_OK = typeof Chart !== 'undefined';
 if (!CHARTS_OK) {
-  console.warn('Chart.js unavailable - charts disabled, live data still updating.');
+  console.warn('Chart.js unavailable - charts disabled, dry data still updating.');
 }
 function safeDraw(fn, label) {
   if (!CHARTS_OK) return;
@@ -2630,7 +2630,7 @@ setInterval(tickClock, 500);
 safeDraw(drawChart, 'account');
 safeDraw(drawSparks, 'sparks');
 // initial market paint driven by refresh()
-safeRun(() => paintAccount(SNAPSHOT.accounts.live), 'paintAccount');
+safeRun(() => paintAccount(SNAPSHOT.accounts.dry), 'paintAccount');
 safeRun(loadLogs, 'loadLogs');
 
 safeRun(refresh, 'refresh');
@@ -2682,7 +2682,7 @@ safeRun(refreshFeeds, 'refreshFeeds');
 
   <!-- Footer -->
   <footer>
-    <p>Kai-LIVE Trading Dashboard &middot; ALL NO MARKETS are integrated into the main dashboard at the bottom</p>
+    <p>Kai-Mirror Trading Dashboard &middot; ALL NO MARKETS are integrated into the main dashboard at the bottom</p>
   </footer>
 </div>
 </body>

@@ -2,7 +2,7 @@
 // Runs inside the dashboard page alongside the app script. It adds ONLY what the
 // served markup was missing and wires real-data panels - it never fabricates data.
 // Every number it renders comes from the local server, which in turn reads the
-// Kalshi live API (demo only as fallback) and Coinbase spot.
+// Kalshi dry API (demo only as fallback) and Coinbase spot.
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
@@ -168,7 +168,7 @@
   }
 
   // ---------------------------------------------------------------------
-  // 6. keep the live feed list honest: surface the server's own event lines
+  // 6. keep the dry feed list honest: surface the server's own event lines
   // ---------------------------------------------------------------------
   function paintModeStrip() {
     var el = $('kaiModeStrip');
@@ -179,9 +179,9 @@
       document.body.appendChild(el);
     }
     fetch('/api/health').then(function (r) { return r.json(); }).then(function (d) {
-      el.innerHTML = '<b style="color:' + (d.mode === 'live' ? '#ff5555' : '#2ee6a8') + '">' + String(d.mode).toUpperCase() + '</b>'
+      el.innerHTML = '<b style="color:' + (d.mode === 'dry' ? '#ff5555' : '#2ee6a8') + '">' + String(d.mode).toUpperCase() + '</b>'
         + ' Â· dry cash <b style="color:#e6edf6">$' + Number(d.dry_balance || 0).toFixed(2) + '</b>'
-        + '<div style="color:#5b6a80">live ' + esc(String(d.hosts.kalshi_live).replace('https://', '')) + '</div>'
+        + '<div style="color:#5b6a80">dry ' + esc(String(d.hosts.kalshi_live).replace('https://', '')) + '</div>'
         + '<div style="color:#5b6a80">demo ' + esc(String(d.hosts.kalshi_demo).replace('https://', '')) + ' (fallback)</div>';
     }).catch(function () { });
   }

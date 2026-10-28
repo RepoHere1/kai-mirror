@@ -1,7 +1,7 @@
 'use strict';
 // Loads the SERVED dashboard (http://127.0.0.1:8787/) in jsdom and asserts the
 // page works with real data: app script compiled, panels rendered, ALL NO rows
-// filled from the live API, provenance panel populated, zero console errors.
+// filled from the dry API, provenance panel populated, zero console errors.
 const { JSDOM, VirtualConsole } = require('jsdom');
 const URL_ = 'http://127.0.0.1:8787/';
 
@@ -86,7 +86,7 @@ vc.on('warn', (...a) => { const s = a.map(String).join(' '); if (!/ResizeObserve
   check('no "snapshot refresh failed" in feed', feed.indexOf('snapshot refresh failed') === -1);
 
   const spotAge = $('spotAge') ? $('spotAge').textContent : '';
-  check('spot tile shows a live price', /\$/.test(spotAge), spotAge);
+  check('spot tile shows a dry price', /\$/.test(spotAge), spotAge);
   const k15 = $('k15Ticker') ? $('k15Ticker').textContent : '';
   check('Kalshi contract tile shows a real ticker', /^KX/.test(k15), k15);
 

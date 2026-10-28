@@ -6,12 +6,12 @@
 //   4. guards the unguarded sessionStorage write
 //   5. rewrites dead absolute hrefs
 // No data is embedded: every number on the page comes from server.js at runtime
-// (Kalshi live API -> demo fallback, Coinbase spot, Kilo gateway).
+// (Kalshi dry API -> demo fallback, Coinbase spot, Kilo gateway).
 const fs = require('fs');
 const path = require('path');
 const HERE = __dirname;
 
-const SRC = path.join(HERE, 'live-home.html');
+const SRC = path.join(HERE, 'dry-home.html');
 const CHART = path.join(HERE, 'chart.umd.min.js');
 const INJECT = path.join(HERE, 'page-inject.js');
 const OUT = path.join(HERE, 'app.html');
@@ -53,7 +53,7 @@ if (html.indexOf('href="/all-no-markets"') !== -1) { html = html.split('href="/a
 report.push(n + ' dead absolute href(s) rewritten');
 
 // --- 5. required-id compatibility check --------------------------------------
-const REQUIRED = ['modeDry', 'modeLive', 'modeFlag', 'modeFlagText', 'dCashTile', 'dPosTile', 'dDepTile',
+const REQUIRED = ['modeDry', 'modeDry', 'modeFlag', 'modeFlagText', 'dCashTile', 'dPosTile', 'dDepTile',
   'dAvailTile', 'dRealTile', 'fBalance', 'startAllBtn', 'noLanesBtn', 'acctLabel', 'acctEquity', 'acctToday',
   'acctFoot', 'acctPill', 'spotSource', 'spotAge', 'spotPill', 'spotChart', 'k15Pill', 'k15Ticker', 'k15Up',
   'k15Down', 'k15Target', 'k15Clock', 'k15Detail', 'k15Chart', 'feedNote', 'feedsPanel', 'pnlChart', 'pnlSummary',

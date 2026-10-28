@@ -1,10 +1,10 @@
 'use strict';
-// Kai-LIVE Brain (LIVE): ensemble signal generators + regime classifier
-// Per-server: LIVE real-money. Same logic as brain_dry.js but with LIVE
-// weights, LIVE confidence thresholds, and the EDGE metric wired through.
+// Kai-Mirror Brain (DRY): ensemble signal generators + regime classifier
+// Per-server: DRY real-money. Same logic as brain_dry.js but with DRY
+// weights, DRY confidence thresholds, and the EDGE metric wired through.
 //
 // EDGE metric: EDGE = win_rate * (1 - loss_rate) * normalized_likelihood
-// Thresholds: enter(paper) EDGE > 0.05, execute(live) EDGE > 0.10
+// Thresholds: enter(paper) EDGE > 0.05, execute(dry) EDGE > 0.10
 
 const crypto = require('crypto');
 
@@ -234,7 +234,7 @@ function evaluate(params) {
 // Signal stats - track accuracy per signal source for adaptive weighting
 // ---------------------------------------------------------------------------
 function signalStats() {
-  // LIVE weights: emphasize order-book and volume signals (real-time),
+  // DRY weights: emphasize order-book and volume signals (real-time),
   // de-emphasize cross-expiry (long-dated) and whale (needs confirmed fills)
   return {
     arbitrage: 1.0,
