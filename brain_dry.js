@@ -1,7 +1,7 @@
 'use strict';
-// Kai-Mirror Brain (DRY): ensemble signal generators + regime classifier
-// Per-server: DRY paper-only. No Kalshi order placement — execution is local
-// paper fills at real quoted prices, settled against real Kalshi results.
+// Kai-LIVE Brain (LIVE): ensemble signal generators + regime classifier
+// Per-server: LIVE real-money. Same logic as brain_dry.js but with LIVE
+// weights, LIVE confidence thresholds, and the EDGE metric wired through.
 //
 // EDGE metric: EDGE = win_rate * (1 - loss_rate) * normalized_likelihood
 // Thresholds: enter(paper) EDGE > 0.05, execute(live) EDGE > 0.10
@@ -43,7 +43,7 @@ function edgeMetric(winRate, lossRate, likelihood) {
 function signalArbitrage(q) {
   if (q.yes_ask == null || q.no_ask == null) return null;
   const gap = 1.0 - (q.yes_ask + q.no_ask);
-  if (gap <= 0.0005) return null; // skip noise below 0.05c
+  if (gap <= 0.0005) return null;
   return { side: 'YES', confidence: 1.0, edge: gap, reason: 'parity_arbitrage gap=' + gap.toFixed(4) };
 }
 
@@ -211,7 +211,6 @@ function evaluate(params) {
 
   // Disagreement -> no-trade (side = null)
   if (scoreYes > 0 && scoreNo > 0) {
-    // Both sides have support: no-trade rather than guessing
     return { side: null, confidence: 0, edge: 0, reason: 'disagreement', regime, signals, scoreYes: Number(scoreYes.toFixed(3)), scoreNo: Number(scoreNo.toFixed(3)) };
   }
 
@@ -235,13 +234,15 @@ function evaluate(params) {
 // Signal stats - track accuracy per signal source for adaptive weighting
 // ---------------------------------------------------------------------------
 function signalStats() {
+  // LIVE weights: emphasize order-book and volume signals (real-time),
+  // de-emphasize cross-expiry (long-dated) and whale (needs confirmed fills)
   return {
     arbitrage: 1.0,
-    imbalance: 0.7,
-    volume: 0.6,
-    cross_expiry: 0.5,
-    whale: 0.4,
-    black_scholes: 0.15,
+    imbalance: 0.8,
+    volume: 0.7,
+    cross_expiry: 0.4,
+    whale: 0.35,
+    black_scholes: 0.12,
   };
 }
 
