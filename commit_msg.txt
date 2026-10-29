@@ -1,0 +1,18 @@
+Fix UTF-8 encoding, lane self-awareness, DRY loose tuning, LIVE strict tuning
+
+- Fixed all UTF-8 encoding issues (em dash, middle dot, ellipsis) in all HTML files
+- Added lane_configs: self-aware trading logic per lane with specific thresholds
+  * btc_updown: BTC 15m, high liquidity, order_flow + vol_rp + BS + imbalance
+  * eth_updown: ETH 15m, funding_carry + order_flow + BS
+  * xrp_updown: XRP 15m, wider spreads, vol_rp + term_struct + BS
+  * btc_1h_updown: BTC daily, settlement_alpha + term_struct + cross_expiry
+  * eth_1h_updown: ETH daily, settlement_alpha + funding_carry
+  * xrp_1h_updown: XRP daily, settlement_alpha + vol_rp
+  * hyperliquid_updown: HYPE 15m, volatile, order_flow + vol_rp, tight kelly
+  * hyperliquid_1h_updown: HYPE 1h, term_struct + vol_rp
+  * all_no_markets: scans ALL Kalshi series, NO-side only, high edge threshold
+- DRY mode: LOOSE for analysis (min_edge=0.1%, min_conf=0.25, cooldown=30s, kelly=50%, exposure=50%)
+- LIVE mode: STRICT for real money (min_edge=0.5%, min_conf=0.4, cooldown=120s, kelly=25%, exposure=20%)
+- Each lane has regime_avoid list, preferred_signals, and descriptive metadata
+- Fixed LIVE server brain require (brain_live not brain_dry)
+- Fixed nullish coalescing syntax error
