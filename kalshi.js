@@ -102,10 +102,17 @@ function buildUrl(acct, route, query) {
 // So each request tries the variants and keeps the one that worked.
 // CRITICAL: Cache strategy PER ROUTE because different endpoints need different signing
 const ALL_STRATEGIES = [
-  { scheme: 'pss', withQuery: true },
-  { scheme: 'pss', withQuery: false },
+  { scheme: 'pss', withQuery: true },    // markets needs query string
+  { scheme: 'pss', withQuery: false },   // portfolio needs NO query string
   { scheme: 'pkcs1', withQuery: true },
   { scheme: 'pkcs1', withQuery: false },
+];
+// For portfolio endpoints, force withQuery: false first
+const PORTFOLIO_STRATEGIES = [
+  { scheme: 'pss', withQuery: false },   // portfolio: NO query string first
+  { scheme: 'pss', withQuery: true },
+  { scheme: 'pkcs1', withQuery: false },
+  { scheme: 'pkcs1', withQuery: true },
 ];
 const strategyCache = {}; // key: "acctName:route"
 
@@ -130,11 +137,16 @@ async function raw(acctName, method, route, opts) {
   
   // Strategy cache keyed by account + route (different endpoints need different signing)
   const cacheKey = acctName + ':' + route;
-  const strategies = strategyCache[cacheKey]
-    ? [strategyCache[cacheKey]].concat(ALL_STRATEGIES.filter(s => s !== strategyCache[cacheKey]))
-    : ALL_STRATEGIES;
+  
+  // Use portfolio-specific strategy order for portfolio endpoints
+  const portfolioRoutes = ['/portfolio/balance', '/portfolio/positions', '/portfolio/fills', '/portfolio/orders'];
+  const isPortfolioRoute = portfolioRoutes.some(r => route.startsWith(r));
+  const strategiesToTry = strategyCache[cacheKey]
+    ? [strategyCache[cacheKey]].concat((isPortfolioRoute ? PORTFOLIO_STRATEGIES : ALL_STRATEGIES).filter(s => s !== strategyCache[cacheKey]))
+    : (isPortfolioRoute ? PORTFOLIO_STRATEGIES : ALL_STRATEGIES);
+  
   let lastErr = null;
-  for (const st of strategies) {
+  for (const st of strategiesToTry) {
     const ts = Math.floor(Date.now() / 1000).toString();
     const headers = {
       'KALSHI-ACCESS-KEY': acct.keyId,
