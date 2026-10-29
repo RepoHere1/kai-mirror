@@ -27,16 +27,495 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const WebSocket = require('ws');
+const sqlite3 = require('sqlite3').verbose();
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
+const { KalshiWS } = require('./kalshi_ws');
+const { CoinbaseWS } = require('./coinbase_ws');
 
 const HERE = __dirname;
 const ENV = kalshi.ENV;
 const PORT = Number(ENV.PORT || 8787);  // DRY server: port 8787
 const HOST = '127.0.0.1';
 
-// ---------------------------------------------------------------------------
+// Coinbase credentials for authenticated WebSocket (level2, user channels)
+const COINBASE_CREDS = {
+  apiKey: ENV.COINBASE_API_KEY || '',
+  apiSecret: ENV.COINBASE_API_SECRET || '',
+  apiPassphrase: ENV.COINBASE_API_PASSPHRASE || ''
+};
+const coinbaseAuth = COINBASE_CREDS.apiKey && COINBASE_CREDS.apiSecret ? COINBASE_CREDS : null;
+
+// Rate limiting (in-memory, per-IP)
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 120; // 120 req/min per IP
+const rateLimitMap = new Map();
+
+function rateLimit(ip) {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  const record = rateLimitMap.get(ip) || { count: 0, windowStart: now };
+  if (record.windowStart < windowStart) {
+    record.count = 1;
+    record.windowStart = now;
+  } else {
+    record.count++;
+  }
+  rateLimitMap.set(ip, record);
+  return record.count <= RATE_LIMIT_MAX_REQUESTS;
+}
+
+// Cleanup old rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, record] of rateLimitMap.entries()) {
+    if (record.windowStart < now - RATE_LIMIT_WINDOW_MS * 2) {
+      rateLimitMap.delete(ip);
+    }
+  }
+}, 300000);
+
+// ===========================================================================
+// SQLite Database with proper indexing for trades/positions
+// ===========================================================================
+const DB_FILE = path.join(HERE, 'trading.db');
+const db = new sqlite3.Database(DB_FILE);
+
+// Initialize schema with proper indexes
+db.serialize(() => {
+  // Trades table - core trading data
+  db.run(`CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id TEXT NOT NULL,
+    title TEXT,
+    side TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL,
+    quantity INTEGER NOT NULL,
+    cost_basis REAL NOT NULL,
+    proceeds REAL,
+    pnl REAL,
+    exit_reason TEXT,
+    result TEXT,
+    hold_seconds INTEGER,
+    exit_timestamp TEXT,
+    opened TEXT NOT NULL,
+    bid_at_entry REAL,
+    ask_at_entry REAL,
+    fill_quality REAL,
+    settled_price REAL,
+    settlement_source TEXT,
+    fair_at_entry REAL,
+    edge_at_entry REAL,
+    kelly_fraction REAL,
+    sigma_per_sec REAL,
+    strike REAL,
+    horizon TEXT,
+    regime TEXT,
+    signal_source TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // Indexes for common queries
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trades_exit_time ON trades(exit_timestamp)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trades_side ON trades(side)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trades_pnl ON trades(pnl)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_trades_strategy_time ON trades(strategy, exit_timestamp)`);
+
+  // Positions table - open positions
+  db.run(`CREATE TABLE IF NOT EXISTS positions (
+    id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    title TEXT,
+    series TEXT,
+    strategy TEXT NOT NULL,
+    side TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    qty INTEGER NOT NULL,
+    cost REAL NOT NULL,
+    fair_at_entry REAL,
+    edge_at_entry REAL,
+    sigma_per_sec REAL,
+    strike REAL,
+    horizon TEXT,
+    stop_loss REAL,
+    take_profit REAL,
+    mark REAL,
+    opened TEXT NOT NULL,
+    close_time TEXT,
+    source TEXT,
+    host TEXT,
+    bid_at_entry REAL,
+    ask_at_entry REAL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_positions_strategy ON positions(strategy)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_positions_market ON positions(market_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_positions_opened ON positions(opened)`);
+
+  // Settlement tracking
+  db.run(`CREATE TABLE IF NOT EXISTS settlements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    settled_price REAL NOT NULL,
+    kalshi_result TEXT,
+    coinbase_spot_at_settlement REAL,
+    coinbase_spot_time INTEGER,
+    spot_product TEXT,
+    entry_price REAL NOT NULL,
+    pnl REAL,
+    timestamp TEXT NOT NULL,
+    spot_deviation REAL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_settlements_time ON settlements(timestamp)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_settlements_market ON settlements(market_id)`);
+
+  // Fill quality tracking
+  db.run(`CREATE TABLE IF NOT EXISTS fill_quality (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    bid_at_entry REAL,
+    ask_at_entry REAL,
+    fill_quality REAL,
+    is_maker INTEGER,
+    timestamp TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_fill_quality_strategy ON fill_quality(strategy)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_fill_quality_time ON fill_quality(timestamp)`);
+
+  // Webhook events log
+  db.run(`CREATE TABLE IF NOT EXISTS webhook_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    webhook_id TEXT NOT NULL,
+    event TEXT NOT NULL,
+    payload TEXT,
+    response_code INTEGER,
+    response_body TEXT,
+    success INTEGER,
+    timestamp TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_webhook_events_webhook ON webhook_events(webhook_id)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_webhook_events_time ON webhook_events(timestamp)`);
+
+  // API request log for rate limiting analysis
+  db.run(`CREATE TABLE IF NOT EXISTS api_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    path TEXT NOT NULL,
+    method TEXT NOT NULL,
+    status_code INTEGER,
+    response_time_ms INTEGER,
+    timestamp TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_api_requests_ip ON api_requests(ip)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_api_requests_time ON api_requests(timestamp)`);
+
+  console.log('[SQLite] Database initialized with indexes');
+});
+
+// Helper functions for database operations
+function dbRun(sql, params) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function(err) {
+      if (err) reject(err);
+      else resolve({ id: this.lastID, changes: this.changes });
+    });
+  });
+}
+
+function dbGet(sql, params) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+}
+
+function dbAll(sql, params) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+// Persist trades to SQLite (in addition to JSON state)
+async function persistTrade(trade) {
+  try {
+    await dbRun(`INSERT INTO trades (
+      market_id, title, side, strategy, entry_price, exit_price, quantity,
+      cost_basis, proceeds, pnl, exit_reason, result, hold_seconds,
+      exit_timestamp, opened, bid_at_entry, ask_at_entry, fill_quality,
+      settled_price, settlement_source, fair_at_entry, edge_at_entry,
+      kelly_fraction, sigma_per_sec, strike, horizon, regime, signal_source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      trade.market_id, trade.title, trade.side, trade.strategy,
+      trade.entry_price, trade.exit_price, trade.quantity,
+      trade.cost_basis, trade.proceeds, trade.pnl, trade.exit_reason,
+      trade.result, trade.hold_seconds, trade.exit_timestamp,
+      trade.opened, trade.bid_at_entry, trade.ask_at_entry, trade.fill_quality,
+      trade.settled_price, trade.settlement_source, trade.fair_at_entry,
+      trade.edge_at_entry, trade.kelly_fraction, trade.sigma_per_sec,
+      trade.strike, trade.horizon, trade.regime, trade.reason?.split('_')[0]
+    ]);
+  } catch (e) { console.error('persistTrade failed:', e.message); }
+}
+
+// Persist position to SQLite
+async function persistPosition(pos) {
+  try {
+    await dbRun(`INSERT OR REPLACE INTO positions (
+      id, market_id, title, series, strategy, side, entry_price, qty, cost,
+      fair_at_entry, edge_at_entry, sigma_per_sec, strike, horizon,
+      stop_loss, take_profit, mark, opened, close_time, source, host,
+      bid_at_entry, ask_at_entry
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      pos.id, pos.market_id, pos.title, pos.series, pos.strategy, pos.side,
+      pos.entry_price, pos.qty, pos.cost, pos.fair_at_entry, pos.edge_at_entry,
+      pos.sigma_per_sec, pos.strike, pos.horizon, pos.stop_loss, pos.take_profit,
+      pos.mark, pos.opened, pos.close_time, pos.source, pos.host,
+      pos.bid_at_entry, pos.ask_at_entry
+    ]);
+  } catch (e) { console.error('persistPosition failed:', e.message); }
+}
+
+// Remove position from SQLite
+async function removePosition(posId) {
+  try {
+    await dbRun(`DELETE FROM positions WHERE id = ?`, [posId]);
+  } catch (e) { console.error('removePosition failed:', e.message); }
+}
+
+// Persist settlement
+async function persistSettlement(settlement) {
+  try {
+    await dbRun(`INSERT INTO settlements (
+      market_id, side, strategy, settled_price, kalshi_result,
+      coinbase_spot_at_settlement, coinbase_spot_time, spot_product,
+      entry_price, pnl, timestamp, spot_deviation
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      settlement.market_id, settlement.side, settlement.strategy,
+      settlement.settled_price, settlement.kalshi_result,
+      settlement.coinbase_spot_at_settlement, settlement.coinbase_spot_time,
+      settlement.spot_product, settlement.entry_price, settlement.pnl,
+      settlement.timestamp, settlement.spot_deviation
+    ]);
+  } catch (e) { console.error('persistSettlement failed:', e.message); }
+}
+
+// Persist fill quality
+async function persistFillQuality(fq) {
+  try {
+    await dbRun(`INSERT INTO fill_quality (
+      market_id, side, strategy, entry_price, bid_at_entry, ask_at_entry,
+      fill_quality, is_maker, timestamp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      fq.market_id, fq.side, fq.strategy, fq.entry_price,
+      fq.bid_at_entry, fq.ask_at_entry, fq.fill_quality,
+      fq.fill_quality <= 0 ? 1 : 0, fq.timestamp
+    ]);
+  } catch (e) { console.error('persistFillQuality failed:', e.message); }
+}
+
+// Persist webhook event
+async function persistWebhookEvent(whId, event, payload, responseCode, responseBody, success) {
+  try {
+    await dbRun(`INSERT INTO webhook_events (
+      webhook_id, event, payload, response_code, response_body, success, timestamp
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [whId, event, JSON.stringify(payload), responseCode, responseBody, success ? 1 : 0, new Date().toISOString()]);
+  } catch (e) { console.error('persistWebhookEvent failed:', e.message); }
+}
+
+// Persist API request
+async function persistApiRequest(ip, path, method, statusCode, responseTimeMs) {
+  try {
+    await dbRun(`INSERT INTO api_requests (ip, path, method, status_code, response_time_ms, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)`,
+    [ip, path, method, statusCode, responseTimeMs, new Date().toISOString()]);
+  } catch (e) { console.error('persistApiRequest failed:', e.message); }
+}
+
+// Sync existing state to SQLite on startup
+async function syncStateToDb() {
+  try {
+    console.log('[syncStateToDb] Starting sync...');
+    const trades = state.dry.closed;
+    const positions = state.dry.positions;
+    const settlements = state.settlement_db;
+    const fillQuality = state.fill_quality_db;
+    
+    console.log('[syncStateToDb] Trades:', trades.length, 'Positions:', positions.length, 'Settlements:', settlements.length, 'FillQuality:', fillQuality.length);
+    
+    // Batch insert trades using a transaction
+    if (trades.length > 0) {
+      await new Promise((resolve, reject) => {
+        db.serialize(() => {
+          db.run('BEGIN TRANSACTION');
+          const stmt = db.prepare(`INSERT INTO trades (
+            market_id, title, side, strategy, entry_price, exit_price, quantity,
+            cost_basis, proceeds, pnl, exit_reason, result, hold_seconds,
+            exit_timestamp, opened, bid_at_entry, ask_at_entry, fill_quality,
+            settled_price, settlement_source, fair_at_entry, edge_at_entry,
+            kelly_fraction, sigma_per_sec, strike, horizon, regime, signal_source
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+          
+          let count = 0;
+          for (const t of trades) {
+            stmt.run([
+              t.market_id, t.title, t.side, t.strategy,
+              t.entry_price, t.exit_price, t.quantity,
+              t.cost_basis, t.proceeds, t.pnl, t.exit_reason,
+              t.result, t.hold_seconds, t.exit_timestamp,
+              t.opened, t.bid_at_entry, t.ask_at_entry, t.fill_quality,
+              t.settled_price, t.settlement_source, t.fair_at_entry,
+              t.edge_at_entry, t.kelly_fraction, t.sigma_per_sec,
+              t.strike, t.horizon, t.regime, t.reason?.split('_')[0]
+            ]);
+            count++;
+          }
+          stmt.finalize();
+          db.run('COMMIT', (err) => {
+            if (err) reject(err);
+            else {
+              console.log('[syncStateToDb] Inserted', count, 'trades');
+              resolve();
+            }
+          });
+        });
+      });
+    }
+    
+    // Batch insert positions
+    if (positions.length > 0) {
+      await new Promise((resolve, reject) => {
+        db.serialize(() => {
+          db.run('BEGIN TRANSACTION');
+          const stmt = db.prepare(`INSERT OR REPLACE INTO positions (
+            id, market_id, title, series, strategy, side, entry_price, qty, cost,
+            fair_at_entry, edge_at_entry, sigma_per_sec, strike, horizon,
+            stop_loss, take_profit, mark, opened, close_time, source, host,
+            bid_at_entry, ask_at_entry
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+          
+          let count = 0;
+          for (const p of positions) {
+            stmt.run([
+              p.id, p.market_id, p.title, p.series, p.strategy, p.side,
+              p.entry_price, p.qty, p.cost, p.fair_at_entry, p.edge_at_entry,
+              p.sigma_per_sec, p.strike, p.horizon, p.stop_loss, p.take_profit,
+              p.mark, p.opened, p.close_time, p.source, p.host,
+              p.bid_at_entry, p.ask_at_entry
+            ]);
+            count++;
+          }
+          stmt.finalize();
+          db.run('COMMIT', (err) => {
+            if (err) reject(err);
+            else {
+              console.log('[syncStateToDb] Inserted', count, 'positions');
+              resolve();
+            }
+          });
+        });
+      });
+    }
+    
+    // Batch insert settlements
+    if (settlements.length > 0) {
+      await new Promise((resolve, reject) => {
+        db.serialize(() => {
+          db.run('BEGIN TRANSACTION');
+          const stmt = db.prepare(`INSERT INTO settlements (
+            market_id, side, strategy, settled_price, kalshi_result,
+            coinbase_spot_at_settlement, coinbase_spot_time, spot_product,
+            entry_price, pnl, timestamp, spot_deviation
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+          
+          let count = 0;
+          for (const s of settlements) {
+            stmt.run([
+              s.market_id, s.side, s.strategy,
+              s.settled_price, s.kalshi_result,
+              s.coinbase_spot_at_settlement, s.coinbase_spot_time,
+              s.spot_product, s.entry_price, s.pnl,
+              s.timestamp, s.spot_deviation
+            ]);
+            count++;
+          }
+          stmt.finalize();
+          db.run('COMMIT', (err) => {
+            if (err) reject(err);
+            else {
+              console.log('[syncStateToDb] Inserted', count, 'settlements');
+              resolve();
+            }
+          });
+        });
+      });
+    }
+    
+    // Batch insert fill quality
+    if (fillQuality.length > 0) {
+      await new Promise((resolve, reject) => {
+        db.serialize(() => {
+          db.run('BEGIN TRANSACTION');
+          const stmt = db.prepare(`INSERT INTO fill_quality (
+            market_id, side, strategy, entry_price, bid_at_entry, ask_at_entry,
+            fill_quality, is_maker, timestamp
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+          
+          let count = 0;
+          for (const fq of fillQuality) {
+            stmt.run([
+              fq.market_id, fq.side, fq.strategy, fq.entry_price,
+              fq.bid_at_entry, fq.ask_at_entry, fq.fill_quality,
+              fq.fill_quality <= 0 ? 1 : 0, fq.timestamp
+            ]);
+            count++;
+          }
+          stmt.finalize();
+          db.run('COMMIT', (err) => {
+            if (err) reject(err);
+            else {
+              console.log('[syncStateToDb] Inserted', count, 'fill quality');
+              resolve();
+            }
+          });
+        });
+      });
+    }
+    
+    console.log('[SQLite] State synced:', trades.length, 'trades,', positions.length, 'positions');
+  } catch (e) { console.error('syncStateToDb failed:', e.message); }
+}
+
+// ===========================================================================
 // Lane registry - every lane maps to a REAL Kalshi series and a REAL spot feed.
 // `seriesList` is ordered: the declared series first, then real fallbacks that
 // share the same horizon family. The lane card always names the series actually
@@ -130,32 +609,41 @@ function exterminateSupervisors() {
 // Persisted state
 // ---------------------------------------------------------------------------
 const STATE_FILE = path.join(HERE, 'state.json');
+const DRY_PAPER_STARTING_BALANCE = 10000; // Paper trading starting balance
 function defaultState() {
   const allNoStart = 250;
   return {
-    mode: 'dry',  // DRY server: start in DRY mode
+    mode: 'dry',
     no_lanes_enabled: true,
     all_no: {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
-    runtime: { clip: 5, min_edge: 0.001, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 30, entry_cooldown_sec: 60 },
+    runtime: { clip: 5, min_edge: 0.001, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 30, entry_cooldown_sec: 60, max_hold_sec: 300, max_exposure_pct: 0.3, maker_only: true },
     signal_weights: brain.signalStats(),
     signal_outcomes: [],
     lanes: {},
-    dry: { positions: [], closed: [], balance: 0, starting_balance: 0, entries: 0, running: false },
+    dry: { positions: [], closed: [], balance: 0, starting_balance: DRY_PAPER_STARTING_BALANCE, entries: 0, running: false },
     alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
     logs: [],
     booted_at: new Date().toISOString(),
+    settlement_db: [],
+    fill_quality_db: [],
+    webhooks: [],
   };
 }
 function loadState() {
   try {
     const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     const base = defaultState();
+    // Force paper starting balance - don't load real Kalshi balance as paper baseline
+    const rawDry = raw.dry || {};
+    if (rawDry.starting_balance != null && rawDry.starting_balance < 0) {
+      rawDry.starting_balance = DRY_PAPER_STARTING_BALANCE;
+    }
     return Object.assign(base, raw, {
       runtime: Object.assign(base.runtime, raw.runtime || {}),
-      dry: Object.assign(base.dry, raw.dry || {}),
+      dry: Object.assign(base.dry, rawDry),
       all_no: Object.assign(base.all_no, raw.all_no || {}),
     });
   } catch (e) { return defaultState(); }
@@ -279,6 +767,30 @@ function quoteFromMarket(m) {
     sub_title: m.yes_sub_title || m.sub_title || '',
     updated: m.updated_time,
   };
+}
+
+// Options chain cache - full chain per series (8 depths) for cross-expiry/term structure
+// Key: series, Value: { at, markets: [all strikes], source, host }
+const optionsChainCache = new Map();
+const OPTIONS_CHAIN_TTL = 5000; // 5 seconds
+
+async function fetchOptionsChain(series) {
+  const key = 'chain:' + series;
+  const hit = optionsChainCache.get(key);
+  if (hit && Date.now() - hit.at < OPTIONS_CHAIN_TTL) return hit;
+  try {
+    const r = await kalshi.get('/markets', { query: { limit: 20, status: 'open', series_ticker: series }, ttlMs: 1500 });
+    const ms = ((r.data && r.data.markets) || []).map(quoteFromMarket);
+    // Sort by strike for easy access
+    ms.sort((a, b) => (a.strike || 0) - (b.strike || 0));
+    const out = { at: Date.now(), markets: ms, source: r.source, host: r.host, ms: r.ms, fetched_at: r.at };
+    optionsChainCache.set(key, out);
+    return out;
+  } catch (e) {
+    const out = { at: Date.now(), markets: [], source: 'error', error: String(e.message || e), ms: null };
+    optionsChainCache.set(key, out);
+    return out;
+  }
 }
 
 async function marketsForSeries(series, limit) {
@@ -428,8 +940,8 @@ function realBalanceCash() {
   return null;
 }
 function dryCash() {
-  // cash = baseline + realized - deployed  (the dashboard's own identity)
-  return Number((state.dry.baseline + dryRealized() - deployed()).toFixed(4));
+  // cash = starting_balance + realized - deployed  (the dashboard's own identity)
+  return Number((state.dry.starting_balance + dryRealized() - deployed()).toFixed(4));
 }
 function dryEquity() {
   // real balance (if loaded) + dry mark-to-market of open positions at the real bid,
@@ -491,6 +1003,9 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
   const tp = Number(Math.min(0.99, price + (price * 2 * state.runtime.stop_loss)).toFixed(3));
+  // Capture bid/ask at entry for fill quality tracking
+  const bid_at_entry = side === 'YES' ? q.yes_bid : q.no_bid;
+  const ask_at_entry = side === 'YES' ? q.yes_ask : q.no_ask;
   const pos = {
     id: 'dry-' + crypto.randomBytes(3).toString('hex'),
     market_id: q.ticker,
@@ -512,14 +1027,19 @@ function openDryPosition(lane, q, side, price, fair, edge, sigma) {
     close_time: q.close_time,
     source: q.source || 'dry',
     host: q.host || kalshi.LIVE_BASE,
+    // Fill quality tracking
+    bid_at_entry,
+    ask_at_entry,
   };
   state.dry.positions.push(pos);
   const ls = laneState(lane.name);
   ls.entries++;
   ls.heartbeat = new Date().toISOString();
   ls.last_series = q.series;
-  log('dry_open', { strategy: lane.name, market: pos.market_id, side, entry: price, qty, cost, fair: pos.fair_at_entry, edge: pos.edge_at_entry, source: pos.source });
+  log('dry_open', { strategy: lane.name, market: pos.market_id, side, entry: price, qty, cost, fair: pos.fair_at_entry, edge: pos.edge_at_entry, source: pos.source, bid_at_entry, ask_at_entry });
   broadcast('strategy', lane.name + ' entry ' + side + ' ' + pos.market_id + ' @ ' + price);
+  // Persist to SQLite
+  persistPosition(pos);
   save();
   return pos;
 }
@@ -530,20 +1050,57 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   state.dry.positions.splice(idx, 1);
   const proceeds = Number((pos.qty * exitPrice).toFixed(4));
   const pnl = Number((proceeds - pos.cost).toFixed(4));
+  
+  // Fill quality: (fill - bid) / (ask - bid) — should be ≤ 0 for maker
+  let fillQuality = null;
+  if (pos.bid_at_entry != null && pos.ask_at_entry != null && pos.ask_at_entry !== pos.bid_at_entry) {
+    fillQuality = (pos.entry_price - pos.bid_at_entry) / (pos.ask_at_entry - pos.bid_at_entry);
+  }
+  
   const trade = {
     market_id: pos.market_id, title: pos.title, side: pos.side, strategy: pos.strategy,
     entry_price: pos.entry_price, exit_price: exitPrice, quantity: pos.qty, cost_basis: pos.cost,
     proceeds, pnl, exit_reason: reason, result: result || '', hold_seconds: Math.round((Date.now() - new Date(pos.opened).getTime()) / 1000),
     exit_timestamp: new Date().toISOString(), opened: pos.opened,
+    // Fill quality tracking
+    bid_at_entry: pos.bid_at_entry,
+    ask_at_entry: pos.ask_at_entry,
+    fill_quality: fillQuality,
+    // Settlement tracking (filled when settled)
+    settled_price: reason === 'settled' ? exitPrice : null,
+    settlement_source: reason === 'settled' ? 'kalshi' : null,
   };
   state.dry.closed.push(trade);
+  
+  // Record fill quality
+  if (fillQuality != null) {
+    state.fill_quality_db.push({
+      market_id: pos.market_id,
+      side: pos.side,
+      strategy: pos.strategy,
+      entry_price: pos.entry_price,
+      bid_at_entry: pos.bid_at_entry,
+      ask_at_entry: pos.ask_at_entry,
+      fill_quality: fillQuality,
+      timestamp: new Date().toISOString(),
+    });
+    // Keep last 10000 entries
+    if (state.fill_quality_db.length > 10000) state.fill_quality_db.shift();
+  }
+  
   const ls = laneState(pos.strategy);
   ls.trades++;
   if (pnl > 0) ls.wins++; else ls.losses++;
   ls.realized = Number((ls.realized + pnl).toFixed(2));
   ls.heartbeat = new Date().toISOString();
-  log('dry_close', { strategy: pos.strategy, market: pos.market_id, side: pos.side, entry: pos.entry_price, exit: exitPrice, reason, pnl, result: result || '' });
+  log('dry_close', { strategy: pos.strategy, market: pos.market_id, side: pos.side, entry: pos.entry_price, exit: exitPrice, reason, pnl, result: result || '', fill_quality: fillQuality });
   broadcast('strategy', pos.strategy + ' exit ' + pos.market_id + ' @ ' + exitPrice + ' pnl ' + pnl);
+  fireWebhooks('trade_exit', { market_id: pos.market_id, side: pos.side, strategy: pos.strategy, entry_price: pos.entry_price, exit_price: exitPrice, pnl, reason, timestamp: new Date().toISOString() });
+  // Persist to SQLite
+  persistTrade(trade);
+  if (fillQuality != null) persistFillQuality({ market_id: pos.market_id, side: pos.side, strategy: pos.strategy, entry_price: pos.entry_price, bid_at_entry: pos.bid_at_entry, ask_at_entry: pos.ask_at_entry, fill_quality: fillQuality, timestamp: trade.exit_timestamp });
+  if (reason === 'settled') persistSettlement({ market_id: pos.market_id, side: pos.side, strategy: pos.strategy, settled_price: exitPrice, kalshi_result: result, coinbase_spot_at_settlement: null, coinbase_spot_time: null, spot_product: null, entry_price: pos.entry_price, pnl: trade.pnl, timestamp: trade.exit_timestamp, spot_deviation: null });
+  removePosition(pos.id);
   save();
 }
 
@@ -561,6 +1118,24 @@ async function markDryPositions() {
     for (const pos of held) {
       if (q.result === 'yes' || q.result === 'no') {
         const settled = Number(q.result === pos.side.toLowerCase() ? 1 : 0);
+        // Record settlement data: Coinbase spot at settlement as CF BRTI proxy
+        const spotAtSettlement = pos.spot ? spot[pos.spot] : null;
+        const settlementRecord = {
+          market_id: pos.market_id,
+          side: pos.side,
+          strategy: pos.strategy,
+          settled_price: settled,
+          kalshi_result: q.result,
+          coinbase_spot_at_settlement: spotAtSettlement ? spotAtSettlement.price : null,
+          coinbase_spot_time: spotAtSettlement ? spotAtSettlement.t : null,
+          spot_product: pos.spot,
+          entry_price: pos.entry_price,
+          pnl: settled * pos.qty - pos.cost,
+          timestamp: new Date().toISOString(),
+        };
+        state.settlement_db.push(settlementRecord);
+        if (state.settlement_db.length > 10000) state.settlement_db.shift();
+        
         closeDryPosition(pos, settled, 'settled', q.result);
         continue;
       }
@@ -569,11 +1144,23 @@ async function markDryPositions() {
         continue;
       }
       const bid = pos.side === 'YES' ? q.yes_bid : q.no_bid;
-      if (bid != null) pos.mark = bid;
-      pos.quote = { bid, ask: pos.side === 'YES' ? q.yes_ask : q.no_ask, close_time: q.close_time, status: q.status, updated: q.updated };
-      const heldMs = Date.now() - new Date(pos.opened).getTime();
-      if (heldMs < Number(state.runtime.min_hold_sec || 45) * 1000) continue;
-      if (bid != null && bid >= pos.take_profit) closeDryPosition(pos, bid, 'take_profit', '');
+            if (bid != null) pos.mark = bid;
+            pos.quote = { bid, ask: pos.side === 'YES' ? q.yes_ask : q.no_ask, close_time: q.close_time, status: q.status, updated: q.updated };
+            const heldMs = Date.now() - new Date(pos.opened).getTime();
+            if (heldMs < Number(state.runtime.min_hold_sec || 45) * 1000) continue;
+
+            // Time-decay exit: force exit at 80% of contract lifetime
+            const totalLifeMs = new Date(q.close_time).getTime() - new Date(pos.opened).getTime();
+            const lifePct = heldMs / totalLifeMs;
+            if (lifePct > 0.8) { closeDryPosition(pos, bid, 'time_decay', ''); continue; }
+
+            // Trailing stop: 50% profit lock once mark >= entry + 0.5*edge
+            if (bid != null && pos.edge_at_entry > 0 && bid >= pos.entry_price + 0.5 * pos.edge_at_entry) {
+              const trailStop = pos.entry_price + (bid - pos.entry_price) * 0.5;
+              if (bid <= trailStop) { closeDryPosition(pos, bid, 'trail_stop', ''); continue; }
+            }
+
+            if (bid != null && bid >= pos.take_profit) closeDryPosition(pos, bid, 'take_profit', '');
             else if (bid != null && bid <= pos.stop_loss) closeDryPosition(pos, bid, 'stop_loss', '');
     }
   }
@@ -872,25 +1459,27 @@ function snapshotPayload(book) {
   const dry = dryAccountPayload();
   const prov = lastProvenance();
   return {
-    book: b,
-    mode: modePayload(b),
-    balance: dry.cash,
-    kalshi_age_sec: null ? Math.round((Date.now() - null) / 1000) : null,
-    accounts: { dry },
-    current: b,
-    equity: dry.curve,
-    positions: dryPositions(),
-    strategy_cards: cards(),
-    trades: tradesStats(),
-    data: { dry: { win_rate: dry.win_rate }, ai_cost_today: 0 },
-    kalshi: kalshiBlock(b),
-    market_titles: TITLES,
-    no_lanes_enabled: !!state.no_lanes_enabled,
-    running_count: LANES.filter(l => laneState(l.name).running).length,
-    uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
-    provenance: prov,
-    generated_at: new Date().toISOString(),
-  };
+      book: b,
+      mode: modePayload(b),
+      balance: dry.cash,
+      kalshi_age_sec: null ? Math.round((Date.now() - null) / 1000) : null,
+      accounts: { dry },
+      current: b,
+      equity: dry.curve,
+      positions: dryPositions(),
+      strategy_cards: cards(),
+      trades: tradesStats(),
+      data: { dry: { win_rate: dry.win_rate }, ai_cost_today: 0 },
+      kalshi: kalshiBlock(b),
+      market_titles: TITLES,
+      no_lanes_enabled: !!state.no_lanes_enabled,
+      running_count: LANES.filter(l => laneState(l.name).running).length,
+      uptime_sec: Math.round((Date.now() - new Date(state.booted_at).getTime()) / 1000),
+      provenance: prov,
+      spot: Object.fromEntries(Object.entries(spot).map(([k, v]) => [k, v.price != null ? { price: v.price, bid: v.bid, ask: v.ask, t: v.t, at: v.at, points: v.points?.length || 0 } : null]).filter(([k, v]) => v != null)),
+      generated_at: new Date().toISOString(),
+      debug: 'spot-field-added',
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -901,15 +1490,17 @@ function noteProvenance(rec) { provLog.unshift(rec); if (provLog.length > 60) pr
 function lastProvenance() {
   const btc = spot['BTC-USD'];
   const m = marketCache.get('KXBTC15M:5');
+  const btcAt = (btc && btc.at && !isNaN(new Date(btc.at).getTime())) ? new Date(btc.at).toISOString() : null;
+  const mAt = (m && m.at && !isNaN(new Date(m.at).getTime())) ? new Date(m.at).toISOString() : null;
   return {
     spot: {
-      product: 'BTC-USD', price: btc ? btc.price : null, at: btc ? new Date(btc.at).toISOString() : null,
+      product: 'BTC-USD', price: btc ? btc.price : null, at: btcAt,
       source: 'Coinbase Exchange public ticker',
       url: 'https://api.exchange.coinbase.com/products/BTC-USD/ticker',
     },
     kalshi: {
       host: m ? m.host : null, source: m ? m.source : null,
-      fetched_at: m ? new Date(m.at).toISOString() : null, latency_ms: m ? m.ms : null,
+      fetched_at: mAt, latency_ms: m ? m.ms : null,
       series: 'KXBTC15M',
       key_id: kalshi.accounts.dry.keyId,
       url: (m ? m.host : kalshi.LIVE_BASE) + '/markets?series_ticker=KXBTC15M',
@@ -1011,60 +1602,108 @@ function getAllNoBook() {
 
 async function noBook() {
   // Return available NO-side market recommendations for potential entries
+  // Scans ALL Kalshi series, not just DRY/LIVE lanes - open to ANY prediction market
   const rows = [];
-  const series = Array.from(new Set(LANES.flatMap(l => l.seriesList || []).filter(Boolean)));
-  for (const s of series) {
-    const res = await marketsForSeries(s, 8);
+  const allSeries = await getAllTradableSeries();
+  
+  for (const s of allSeries) {
+    const res = await marketsForSeries(s, 12); // deeper scan
     for (const q of res.markets || []) {
       if (q.status === 'finalized' || q.result) continue;
-      const laneName = strategyForSeries(s);
-      const lane = LANES.find(l => (l.seriesList || []).includes(s));
-      const sp = lane && lane.spot ? spot[lane.spot] : null;
+      if (!q.strike || !q.close_time) continue;
       
-      // Compute fair value
+      const sp = spot.BTC ? spot.BTC : spot.ETH ? spot.ETH : null; // fallback spot
+      if (!sp || !Number.isFinite(sp.price)) continue;
+      
+      // Compute fair value using Black-Scholes normal CDF
+      const perSec = perSecondVol('BTC', 900); // use BTC vol as proxy
+      const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
+      if (tau < 30 || tau > 3600) continue; // only 30s-1hr contracts
+      
       let fair = 0.5;
-      if (sp && Number.isFinite(sp.price) && q.strike != null && q.close_time) {
-        const perSec = perSecondVol(lane.spot, 900);
-        const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
-        if (perSec && tau > 20) fair = 1 - normCdf(Math.log(sp.price / q.strike) / (perSec * Math.sqrt(tau)));
-      }
+      if (perSec && tau > 20) fair = 1 - normCdf(Math.log(sp.price / q.strike) / (perSec * Math.sqrt(tau)));
       
-      // Skip markets with unreasonable fair value
-      if (fair < 0.05 || fair > 0.95) continue;
+      // Strict fair value bounds
+      if (fair < 0.1 || fair > 0.9) continue;
       
-      // Use synthetic quotes if market quotes are missing
-      const no_bid = q.no_bid ?? Math.max(0.02, (1 - fair) - 0.01);
-      const no_ask = q.no_ask ?? Math.min(0.98, (1 - fair) + 0.01);
+      // Use REAL market quotes - no synthetic fallbacks
+      const no_bid = q.no_bid;
+      const no_ask = q.no_ask;
+      if (!no_bid || !no_ask || no_bid <= 0.02 || no_ask >= 0.98) continue;
       
-      const edge = fair - no_ask;
-      if (edge <= 0) continue;
+      const spread = no_ask - no_bid;
+      if (spread > 0.05) continue; // skip wide spreads
       
-      const kelly = no_ask > 0 ? Math.max(0, edge / (1 - no_ask)) : 0;
-      const limit_entry = q.no_bid ?? Math.max(0.02, (1 - fair) - 0.01);
-      const qty = Math.max(1, Math.floor(state.runtime.clip / Math.max(0.01, no_ask)));
+      // Edge = fair - ask (we buy NO at ask, fair says NO should be 1-fair)
+      const edge = (1 - fair) - no_ask;
+      if (edge < 0.008) continue; // MINIMUM 0.8% edge - raised from 0.1%
+      
+      // Kelly with cap
+      const kelly = Math.max(0, edge / (1 - no_ask));
+      const kellyCapped = Math.min(0.25, kelly); // cap at 25% Kelly
+      
+      // Sizing: clip-based with Kelly fraction
+      const qty = Math.max(1, Math.floor(5 * kellyCapped / Math.max(0.01, no_ask)));
+      if (qty < 1) continue;
+      
       const cost = Number((qty * no_ask).toFixed(2));
-      const stop = no_ask * (1 - state.runtime.stop_loss);
-      const take_profit = Math.min(0.99, no_ask + no_ask * 2 * state.runtime.stop_loss);
-      const confidence = Number(Math.max(0, Math.min(1, edge / Math.max(0.01, state.runtime.min_edge))).toFixed(2));
+      
+      // Dynamic stops based on volatility
+      const volAdj = Math.min(1.5, Math.max(0.5, perSec * 100));
+      const stopLoss = no_ask * (1 - 0.15 * volAdj); // 15% base, vol-adjusted
+      const takeProfit = Math.min(0.99, no_ask + (no_ask - stopLoss) * 2.5); // 2.5:1 R:R
+      
+      // Confidence score
+      const confidence = Math.min(1, edge / 0.03);
       
       rows.push({
-        id: q.ticker, market: q.title, market_id: q.ticker, strategy: laneName + ' / no-side',
-        side: 'NO', limit_entry: limit_entry, qty,
-        cost: Number(cost.toFixed(2)),
-        fair: Number(fair.toFixed(3)), edge: Number(edge.toFixed(3)),
-        kelly: Number(Math.min(state.runtime.kelly_cap, kelly).toFixed(3)),
-        stop: Number(stop.toFixed(3)),
-        take_profit: Number(take_profit.toFixed(3)),
+        id: q.ticker,
+        market: q.title,
+        market_id: q.ticker,
+        strategy: 'all_no_markets',
+        side: 'NO',
+        limit_entry: no_bid, // MAKER at bid
+        qty,
+        cost,
+        fair: Number(fair.toFixed(3)),
+        edge: Number(edge.toFixed(4)),
+        kelly: Number(kellyCapped.toFixed(3)),
+        stop: Number(stopLoss.toFixed(3)),
+        take_profit: Number(takeProfit.toFixed(3)),
         confidence: Number(confidence.toFixed(2)),
-        expiration: q.close_time, status: 'resting limit (read-only)', book: 'dry',
-        opened: null, source: res.source, host: res.host,
+        expiration: q.close_time,
+        status: 'candidate',
+        source: res.source,
+        host: res.host,
+        no_bid,
+        no_ask,
+        spread,
+        tau,
       });
     }
   }
-  rows.sort((a, b) => b.edge - a.edge);
-  return rows;
+  
+  // Sort by edge * confidence (quality-adjusted edge)
+  rows.sort((a, b) => (b.edge * b.confidence) - (a.edge * a.confidence));
+  return rows.slice(0, 20); // top 20 only
 }
 
+// Fetch ALL tradable Kalshi series (not just LANES)
+async function getAllTradableSeries() {
+  try {
+    const res = await kalshi.raw('GET', '/trade-api/v2/markets?status=open&limit=500');
+    const data = await res.json();
+    const seriesSet = new Set();
+    for (const m of data.markets || []) {
+      const s = m.series_ticker || m.ticker.split('-')[0];
+      if (s) seriesSet.add(s);
+    }
+    return Array.from(seriesSet);
+  } catch (e) {
+    // Fallback to LANES series
+    return Array.from(new Set(LANES.flatMap(l => l.seriesList || []).filter(Boolean)));
+  }
+}
 // ---------------------------------------------------------------------------
 // ALL NO MARKETS - Entry/Exit Trade Functions
 // ---------------------------------------------------------------------------
@@ -1072,6 +1711,18 @@ function createAllNoEntry(market_id, entry_price, quantity, fair_at_entry, edge,
   const mode = state.mode;
   const book = state.all_no[mode];
   if (!book) return { error: 'Book not found for mode: ' + mode };
+
+  // OPERATOR_LAW safety: never let bad market data crash the server (an
+  // unhandled rejection here was restart-looping the process). Skip instead.
+  if (typeof entry_price !== 'number' || !Number.isFinite(entry_price) ||
+      typeof quantity !== 'number' || !Number.isFinite(quantity) ||
+      typeof fair_at_entry !== 'number' || !Number.isFinite(fair_at_entry) ||
+      typeof edge !== 'number' || !Number.isFinite(edge) ||
+      typeof kelly !== 'number' || !Number.isFinite(kelly) ||
+      typeof confidence !== 'number' || !Number.isFinite(confidence) ||
+      !market_id || !expiration) {
+    return { error: 'Skipping all_no entry: incomplete market data' };
+  }
 
   const cost = Number((entry_price * quantity).toFixed(2));
   if (book.balance < cost) {
@@ -1168,12 +1819,13 @@ function strategyForSeries(series) {
 }
 
 // ---------------------------------------------------------------------------
-// ALL NO MARKETS - Kalshi order placement (DRY mode only)
+// ALL NO MARKETS - Kalshi order placement (LIVE mode only - real money)
 // ---------------------------------------------------------------------------
 async function postAllNoOrder(position, action, exit_price) {
   // Post a real Kalshi NO-side order for the ALL NO MARKETS book.
-  // DRY mode: real money. DRY mode: never called (book is paper-only).
-  if (state.mode !== 'dry') return null;
+  // DRY mode: paper only - never posts real orders.
+  // LIVE mode: posts real orders to Kalshi.
+  if (state.mode !== 'live') return null;
   try {
     const side = 'NO';
     const qty = position.quantity;
@@ -1234,6 +1886,19 @@ function json(res, obj, code) {
   });
   res.end(body);
 }
+
+// json with API request logging
+function jsonLogged(res, obj, code, req, startTime) {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const u = new URL(req.url, 'http://' + HOST + ':' + PORT);
+  const p = u.pathname;
+  const method = req.method.toUpperCase();
+  const responseTimeMs = Date.now() - startTime;
+  if (!p.startsWith('/api/health') && !p.match(/\.(js|css|png|svg|json)$/)) {
+    persistApiRequest(ip, p, method, code || 200, responseTimeMs).catch(() => {});
+  }
+  return json(res, obj, code);
+}
 function readBody(req) {
   return new Promise(resolve => {
     let b = '';
@@ -1284,11 +1949,20 @@ async function serveAllNoMarkets(res) {
 }
 
 async function handle(req, res) {
+  const startTime = Date.now();
   const u = new URL(req.url, 'http://' + HOST + ':' + PORT);
   const p = u.pathname;
   const method = req.method.toUpperCase();
 
   if (method === 'OPTIONS') return json(res, { ok: true });
+
+  // Rate limiting (skip for health checks and static assets)
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  if (!p.startsWith('/api/health') && !p.match(/\.(js|css|png|svg|json)$/)) {
+    if (!rateLimit(ip)) {
+      return json(res, { error: 'Rate limit exceeded', retry_after: 60 }, 429);
+    }
+  }
 
   // --- static pages: Kai-Mirror serves the DRY book - the ONLY book on this
   // server - plus the NO-side book. There is no DRY page here and no
@@ -1331,12 +2005,58 @@ async function handle(req, res) {
     return json(res, { ok: true, updated, runtime: state.runtime });
   }
   if (p === '/api/config') return json(res, { ok: true, runtime: state.runtime });
+  if (p === '/api/cache') return json(res, { ok: true, stats: kalshi.getCacheStats ? kalshi.getCacheStats() : { error: 'not available' } });
+  if (p === '/api/cache' && method === 'POST') {
+    const b = await readBody(req);
+    if (b.action === 'clear') { kalshi.clearCache ? kalshi.clearCache() : null; return json(res, { ok: true, cleared: true }); }
+    if (b.action === 'warm') { await kalshi.warmCache ? kalshi.warmCache() : null; return json(res, { ok: true, warmed: true }); }
+    return json(res, { error: 'unknown action' }, 400);
+  }
   if (p === '/api/alerts' && method === 'POST') {
     const b = await readBody(req);
     Object.assign(state.alerts, b);
     save();
     return json(res, { ok: true, alerts: state.alerts });
   }
+  if (p === '/api/alerts') return json(res, { ok: true, alerts: state.alerts });
+
+  // --- webhooks for external integrations
+  if (p === '/api/webhooks' && method === 'POST') {
+    const b = await readBody(req);
+    if (!b.url || !b.events || !Array.isArray(b.events)) {
+      return json(res, { error: 'url and events[] required' }, 400);
+    }
+    const id = 'wh_' + crypto.randomBytes(4).toString('hex');
+    state.webhooks = state.webhooks || [];
+    state.webhooks.push({ id, ...b, created: new Date().toISOString() });
+    save();
+    return json(res, { ok: true, webhook: { id, ...b } });
+  }
+  if (p === '/api/webhooks') return json(res, { webhooks: state.webhooks || [] });
+  if (p === '/api/webhooks' && method === 'DELETE') {
+    const id = u.searchParams.get('id');
+    if (!id) return json(res, { error: 'id required' }, 400);
+    state.webhooks = (state.webhooks || []).filter(w => w.id !== id);
+    save();
+    return json(res, { ok: true });
+  }
+
+  // --- fire webhook helper
+  async function fireWebhooks(event, data) {
+    for (const wh of (state.webhooks || [])) {
+      if (wh.events.includes(event)) {
+        try {
+          await fetch(wh.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Kai-Signature': crypto.createHmac('sha256', ENV.KILO_TOKEN || '').update(JSON.stringify(data)).digest('hex') },
+            body: JSON.stringify({ event, data, timestamp: new Date().toISOString() }),
+            timeout: 5000
+          });
+        } catch (e) { console.error('webhook failed:', wh.id, e.message); }
+      }
+    }
+  }
+
   if (p === '/api/logs') {
     const n = Math.max(1, Math.min(2000, Number(u.searchParams.get('lines') || 100)));
     return json(res, { lines: state.logs.slice(0, n) });
@@ -1483,6 +2203,133 @@ async function handle(req, res) {
     return json(res, { page, pages, total, per_page: per, book, trades: slice });
   }
 
+  // --- monitoring panels data
+  if (p === '/api/monitoring') {
+    const closed = state.dry.closed;
+    
+    // 1. Edge decay: entry_edge vs exit_edge
+    const edgeDecay = closed.map(t => ({
+      entry_edge: t.edge_at_entry || 0,
+      exit_edge: Math.abs(t.pnl || 0) / (t.quantity || 1),
+      regime: t.regime || 'unknown',
+      signal: t.reason || 'unknown'
+    })).filter(d => d.entry_edge > 0 && d.exit_edge > 0);
+
+    // 2. Regime win rate
+    const regimeMap = new Map();
+    for (const t of closed) {
+      const reg = t.regime || 'unknown';
+      if (!regimeMap.has(reg)) regimeMap.set(reg, { trades: 0, wins: 0, pnl: 0, edges: [] });
+      const r = regimeMap.get(reg);
+      r.trades++;
+      if (t.pnl > 0) r.wins++;
+      r.pnl += t.pnl || 0;
+      r.edges.push(t.edge_at_entry || 0);
+    }
+    const regimeWinRate = Array.from(regimeMap.entries()).map(([regime, d]) => ({
+      regime,
+      trades: d.trades,
+      wins: d.wins,
+      win_rate: d.trades ? Number((100 * d.wins / d.trades).toFixed(1)) : 0,
+      avg_edge: d.edges.length ? Number((d.edges.reduce((a,b)=>a+b,0) / d.edges.length).toFixed(4)) : 0,
+      pnl: Number(d.pnl.toFixed(2))
+    }));
+
+    // 3. Signal attribution
+    const signalMap = new Map();
+    for (const t of closed) {
+      const sig = t.reason?.split('_')[0] || 'unknown';
+      if (!signalMap.has(sig)) signalMap.set(sig, { trades: 0, wins: 0, pnl: 0 });
+      const s = signalMap.get(sig);
+      s.trades++;
+      if (t.pnl > 0) s.wins++;
+      s.pnl += t.pnl || 0;
+    }
+    const signalWeights = state.signal_weights || {};
+    const signalAttribution = Array.from(signalMap.entries()).map(([signal, d]) => ({
+      signal,
+      trades: d.trades,
+      wins: d.wins,
+      win_rate: d.trades ? Number((100 * d.wins / d.trades).toFixed(1)) : 0,
+      weight: signalWeights[signal] || 0,
+      pnl: Number(d.pnl.toFixed(2))
+    }));
+
+    // 4. Kelly efficiency
+    const kellyEfficiency = closed.filter(t => t.kelly_fraction > 0).map(t => {
+      const kellyReturn = t.kelly_fraction * (t.pnl / t.cost);
+      const actualReturn = t.pnl / t.cost;
+      return {
+        trade: t.market_id,
+        kelly_pct: t.kelly_fraction,
+        actual_pct: actualReturn,
+        efficiency: kellyReturn !== 0 ? actualReturn / kellyReturn : 0,
+        edge: t.edge_at_entry || 0
+      };
+    }).slice(0, 50); // limit to 50 most recent
+
+    // 5. Execution quality (fill price vs bid/ask)
+    // Since DRY uses maker entries at bid, quality should be <= 0
+    const executionQuality = closed.filter(t => t.entry_price && t.bid_at_entry && t.ask_at_entry).map(t => ({
+      market: t.market_id,
+      side: t.side,
+      bid: t.bid_at_entry,
+      ask: t.ask_at_entry,
+      fill: t.entry_price,
+      quality: t.bid_at_entry && t.ask_at_entry ? (t.entry_price - t.bid_at_entry) / (t.ask_at_entry - t.bid_at_entry) : 0
+    })).slice(0, 50);
+
+    // 6. ALL NO heatmap data
+    const allNoBook = state.all_no.dry;
+    const allNoHeatmap = (allNoBook.positions || []).map(p => ({
+      tau: Math.max(0, (new Date(p.expiration || p.close_time || '').getTime() - Date.now()) / 1000),
+      fair: p.fair_at_entry || 0.5,
+      edge: p.edge_at_entry || 0,
+      qty: p.quantity || 1
+    })).filter(d => d.tau > 0);
+
+    // 7. Settlement database - CF BRTI vs Coinbase spot at settlement
+    const settlementData = (state.settlement_db || []).slice(-100).map(s => ({
+      market_id: s.market_id,
+      side: s.side,
+      strategy: s.strategy,
+      settled_price: s.settled_price,
+      kalshi_result: s.kalshi_result,
+      coinbase_spot_at_settlement: s.coinbase_spot_at_settlement,
+      entry_price: s.entry_price,
+      pnl: s.pnl,
+      timestamp: s.timestamp,
+      // Deviation: how much Coinbase spot deviated from expected
+      spot_deviation: s.coinbase_spot_at_settlement && s.entry_price ? 
+        (s.coinbase_spot_at_settlement - s.entry_price) / s.entry_price : null,
+    }));
+
+    // 8. Fill quality database - execution quality over time
+    const fillQualityData = (state.fill_quality_db || []).slice(-200).map(f => ({
+      market_id: f.market_id,
+      side: f.side,
+      strategy: f.strategy,
+      entry_price: f.entry_price,
+      bid_at_entry: f.bid_at_entry,
+      ask_at_entry: f.ask_at_entry,
+      fill_quality: f.fill_quality,
+      timestamp: f.timestamp,
+      // Maker fill quality: negative = maker (good), positive = taker (bad)
+      is_maker: f.fill_quality <= 0,
+    }));
+
+    return json(res, {
+      edge_decay: edgeDecay,
+      regime_win_rate: regimeWinRate,
+      signal_attribution: signalAttribution,
+      kelly_efficiency: kellyEfficiency,
+      execution_quality: executionQuality,
+      all_no_heatmap: allNoHeatmap,
+      settlement_db: settlementData,
+      fill_quality_db: fillQualityData,
+    });
+  }
+
   // --- marketdata (real KXBTC15M + real Coinbase spot)
   if (p === '/api/marketdata') {
     const res15 = await marketsForSeries('KXBTC15M', 5);
@@ -1532,18 +2379,59 @@ async function handle(req, res) {
     return json(res, Object.assign({ model: ENV.KILO_MODEL || 'auto/free', base: ENV.KILO_BASE_URL }, u2));
   }
   if (p === '/api/ai/analyze' && method === 'POST') {
-    const b = await readBody(req);
-    const ctx = analysisPayload(b.strategy || null);
-    const prompt = 'You are reviewing a Kalshi prediction-market trading book. Here is the REAL closed-trade data as JSON. '
-      + 'Give 3-5 concrete, specific recommendations about entries, edges, price bands and risk. Be terse and quantitative.\n\n'
-      + JSON.stringify({ summary: { trades: ctx.trades, win_rate: ctx.win_rate, total_pnl: ctx.total_pnl, avg_pnl: ctx.avg_pnl }, by_side: ctx.by_side, by_price_band: ctx.by_price_band, by_strategy: ctx.by_strategy }).slice(0, 6000);
-    try {
-      const r = await kilo.chat([{ role: 'user', content: prompt }], { strategy: b.strategy || 'book', query_type: 'recommendations' });
-      return json(res, { ok: true, model: r.model, base: r.base, ms: r.ms, usage: r.usage, recommendations: r.text });
-    } catch (e) {
-      return json(res, { error: 'kilo: ' + (e.message || e) + (e.attempts ? ' [' + e.attempts.join(' | ') + ']' : '') }, 502);
+        const b = await readBody(req);
+        console.log('[DEBUG] AI analyze request body:', JSON.stringify(b));
+        const ctx = analysisPayload(b.strategy || null);
+
+        // Monitoring endpoint - returns raw data for dashboard panels
+        if (b.query_type === 'monitoring') {
+          const by_exit_reason = ctx.by_exit_reason || [];
+
+          // Regime win rate (using exit reasons as proxy for regime)
+          const by_regime = (ctx.by_exit_reason || []).map(function(r) {
+            return { regime: r.reason, trades: r.trades, win_rate: 0, pnl: 0 };
+          });
+
+          // Signal attribution (using strategies as proxy)
+          const by_signal = (ctx.by_strategy || []).map(function(s) {
+            return { signal: s.strategy, trades: s.trades, win_rate: s.win_rate || 0, pnl: s.pnl || 0 };
+          });
+
+          // Kelly efficiency
+          var kelly_efficiency = {
+            'total_kelly_budget': state.runtime.kelly_cap,
+            'avg_kelly_used': 0,
+            'efficiency_ratio': 0
+          };
+
+          // Execution quality (maker fill %)
+          var execution_quality = {
+            'maker_fill_pct': 0,
+            'slippage_bps': 0
+          };
+
+          return json(res, {
+            ok: true,
+            by_exit_reason: ctx.by_exit_reason || [],
+            by_regime: by_regime,
+            by_signal: by_signal,
+            kelly_efficiency: kelly_efficiency,
+            execution_quality: execution_quality,
+            generated_at: new Date().toISOString()
+          });
+        }
+
+        // Regular AI analysis
+      const prompt = 'You are reviewing a Kalshi prediction-market trading book. Here is the REAL closed-trade data as JSON. '
+        + 'Give 3-5 concrete, specific recommendations about entries, edges, price bands and risk. Be terse and quantitative.\n\n'
+        + JSON.stringify({ summary: { trades: ctx.trades, win_rate: ctx.win_rate, total_pnl: ctx.total_pnl, avg_pnl: ctx.avg_pnl }, by_side: ctx.by_side, by_price_band: ctx.by_price_band, by_strategy: ctx.by_strategy }).slice(0, 6000);
+      try {
+        const r = await kilo.chat([{ role: 'user', content: prompt }], { strategy: b.strategy || 'book', query_type: 'recommendations' });
+        return json(res, { ok: true, model: r.model, base: r.base, ms: r.ms, usage: r.usage, recommendations: r.text });
+      } catch (e) {
+        return json(res, { error: 'kilo: ' + (e.message || e) + (e.attempts ? ' [' + e.attempts.join(' | ') + ']' : '') }, 502);
+      }
     }
-  }
 
   // --- snapshot + stream
   if (p === '/api/snapshot') {
@@ -1665,28 +2553,43 @@ const server = http.createServer((req, res) => {
   handle(req, res).catch(e => { try { json(res, { error: String(e.message || e) }, 500); } catch (_) { } });
 });
 
+// Prevent process exit on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err.stack || err.message || err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason && reason.stack ? reason.stack : reason);
+});
+
 // Runtime config for ALL NO engine and lane improvements
 const ALL_NO_CONFIG = {
-  scan_interval_ms: 10000,
-  max_concurrent: 10,
-  max_exposure_pct: 0.3,
-  kelly_cap: 0.4,
-  min_edge: 0.001,
-  min_vol: 0.00005,
-  max_gap: 0.015,
+  scan_interval_ms: 15000,        // slower scan, higher quality
+  max_concurrent: 5,              // fewer concurrent positions
+  max_exposure_pct: 0.2,          // 20% max exposure
+  kelly_cap: 0.25,                // 25% Kelly cap
+  min_edge: 0.008,                // 0.8% minimum edge (was 0.1%)
+  min_vol: 0.0001,
+  max_gap: 0.01,
   maker_only: true,
   trail_pct: 0.5,
-  max_hold_pct: 0.8,
-  stop_loss_pct: 0.25,
-  take_profit_mult: 2,
+  max_hold_pct: 0.75,             // exit at 75% lifetime
+  stop_loss_pct: 0.15,            // 15% base stop
+  take_profit_mult: 2.5,          // 2.5:1 reward:risk
+  min_spread: 0.005,              // minimum spread
+  max_spread: 0.04,               // maximum spread
+  min_tau_sec: 30,                // minimum time to expiry
+  max_tau_sec: 3600,              // maximum time to expiry
+  min_confidence: 0.4,            // minimum confidence
 };
 
 async function runAllNoEngine() {
   if (!state.no_lanes_enabled) return;
+  const noLs = laneState('all_no_markets');
+  if (!noLs || !noLs.running) return;
   
   const rows = await noBook();
   const book = state.all_no[state.mode];
-  if (!book || book.balance < state.runtime.clip) return;
+  if (!book || book.balance < 5) return;
   
   // Portfolio heat check
   const exposure = book.positions.reduce((a, p) => a + p.cost, 0);
@@ -1694,31 +2597,31 @@ async function runAllNoEngine() {
   if (book.positions.length >= ALL_NO_CONFIG.max_concurrent) return;
   
   for (const r of rows) {
-    if (r.edge <= ALL_NO_CONFIG.min_edge) break;
+    if (r.edge < ALL_NO_CONFIG.min_edge) continue;
     if (r.kelly <= 0) continue;
-    if (r.fair < 0.55 || r.fair > 0.95) continue;
+    if (r.confidence < ALL_NO_CONFIG.min_confidence) continue;
+    if (r.spread < ALL_NO_CONFIG.min_spread || r.spread > ALL_NO_CONFIG.max_spread) continue;
+    if (r.tau < ALL_NO_CONFIG.min_tau_sec || r.tau > ALL_NO_CONFIG.max_tau_sec) continue;
     
-    const entry = r.no_bid; // maker at bid
-    const edge = r.fair - r.no_ask;
-    if (edge < ALL_NO_CONFIG.min_edge) continue;
-    
-    const kellyFraction = Math.max(0, edge / (1 - r.no_ask));
-    const qty = Math.max(1, Math.floor(
-      ALL_NO_CONFIG.kelly_cap * kellyFraction * book.balance / r.no_ask
-    ));
+    // Use pre-calculated values from noBook
+    const entry = r.limit_entry; // maker at bid
+    const qty = r.qty;
     if (qty < 1) continue;
     
-    const stopLoss = r.no_ask * (1 - ALL_NO_CONFIG.stop_loss_pct);
-    const takeProfit = Math.min(0.99, r.no_ask + r.no_ask * ALL_NO_CONFIG.take_profit_mult * ALL_NO_CONFIG.stop_loss_pct);
+    const cost = qty * entry;
+    if (cost > book.balance) continue;
     
-    await createAllNoEntry(r.market_id, entry, qty, r.fair, edge, r.kelly,
-      stopLoss, takeProfit, r.confidence, r.expiration);
-    book.balance -= qty * entry;
+    await createAllNoEntry(r.market_id, entry, qty, r.fair, r.edge, r.kelly,
+      r.stop, r.take_profit, r.confidence, r.expiration);
+    
     if (book.positions.length >= ALL_NO_CONFIG.max_concurrent) break;
   }
 }
 
 async function runAllNoExits() {
+  if (!state.no_lanes_enabled) return;
+  const noLs = laneState('all_no_markets');
+  if (!noLs || !noLs.running) return;
   const book = state.all_no[state.mode];
   if (!book) return;
   
@@ -1730,6 +2633,8 @@ async function runAllNoExits() {
     
     const mark = q.no_bid;
     const tau = Math.max(0, (new Date(pos.expiration).getTime() - Date.now()) / 1000);
+    const totalLife = Math.max(1, (new Date(pos.expiration).getTime() - new Date(pos.opened_at).getTime()) / 1000);
+    const lifePct = 1 - tau / totalLife;
     
     let shouldExit = false;
     let exitReason = '';
@@ -1741,7 +2646,7 @@ async function runAllNoExits() {
     } else if (pos.stop_loss && mark <= pos.stop_loss) {
       shouldExit = true;
       exitReason = 'stop_loss';
-    } else if (tau < 60) {
+    } else if (lifePct > ALL_NO_CONFIG.max_hold_pct) {
       shouldExit = true;
       exitReason = 'time_decay';
     }
@@ -1760,12 +2665,57 @@ async function boot() {
   OPERATOR_LAW.assertNoSupervisor();
   OPERATOR_LAW.enforce('boot', { action: 'server_start', mode: 'dry' });
   log('boot', { mode: 'dry', dry_balance: dryCash(), kalshi_live: kalshi.LIVE_BASE });
+
+  // Initial spot fetch for immediate data
   await pollSpot();
-  setInterval(pollSpot, 2000);
+  console.log('[boot] pollSpot done');
+
+  // Sync existing state to SQLite
+  try {
+    await syncStateToDb();
+    console.log('[boot] syncStateToDb done');
+  } catch (e) {
+    console.error('[boot] syncStateToDb failed:', e.message);
+  }
+
+  // Warm Kalshi cache
+  try {
+    if (kalshi.warmCache) {
+      await kalshi.warmCache();
+      console.log('[boot] warmCache done');
+    }
+  } catch (e) {
+    console.error('[boot] warmCache failed:', e.message);
+  }
+
+  // Coinbase WebSocket for real-time spot prices (replaces 2s HTTP polling)
+  const spotProducts = ['BTC-USD', 'ETH-USD', 'XRP-USD', 'HYPE-USD'];
+  const coinbaseWS = new CoinbaseWS(spotProducts,
+      (ticker) => {
+        console.log('[CoinbaseWS] Ticker received:', ticker.product_id, ticker.price);
+        const p = spot[ticker.product_id];
+        if (p) {
+          p.price = ticker.price;
+          p.bid = ticker.bid;
+          p.ask = ticker.ask;
+          p.t = Math.floor(new Date(ticker.time).getTime() / 1000) || Math.floor(Date.now() / 1000);
+          p.at = Date.now();
+          p.points.push({ t: p.t, p: ticker.price });
+          const cutoff = Date.now() / 1000 - 86400;
+          while (p.points.length && p.points[0].t < cutoff) p.points.shift();
+          if (p.points.length > 30000) p.points.splice(0, p.points.length - 30000);
+        }
+      },
+      (err) => { console.error('[CoinbaseWS] Error:', err.message); },
+      coinbaseAuth
+    );
+  coinbaseWS.connect();
+
   // OPERATOR_LAW: exterminate any supervisor/watchdog on boot and continuously
   // so nothing can ever override the operator's button pushes — imperial law.
   try { exterminateSupervisors(); } catch (e) { }
   setInterval(() => { try { exterminateSupervisors(); } catch (e) { } }, 3000);
+
   // Keep every lane's series quoted even when no lane is running, so the
   // provenance block on the page always names a dry host and a fresh quote.
   setInterval(async () => {
@@ -1774,13 +2724,28 @@ async function boot() {
       for (const s of lane.seriesList) await marketsForSeries(s, 5);
     }
   }, 5000);
+
   setInterval(async () => {
-      try { rememberTitles(LANES); broadcast('snapshot', 'tick'); sseMessage({ e: 'tick', at: new Date().toISOString(), spot_btc: spot['BTC-USD'].price }); } catch (e) { }
-    }, 3000);
-    // ALL NO engine - runs every 10s for entries, every 5s for exits
-    setInterval(runAllNoEngine, ALL_NO_CONFIG.scan_interval_ms);
-    setInterval(runAllNoExits, 5000);
-    server.listen(PORT, HOST, () => {
+    try { rememberTitles(LANES); broadcast('snapshot', 'tick'); sseMessage({ e: 'tick', at: new Date().toISOString(), spot_btc: spot['BTC-USD'].price }); } catch (e) { }
+  }, 3000);
+
+  // ALL NO engine - runs every 10s for entries, every 5s for exits
+  setInterval(runAllNoEngine, ALL_NO_CONFIG.scan_interval_ms);
+  setInterval(runAllNoExits, 5000);
+
+  // Kalshi WebSocket for real-time market data (replaces 2s polling)
+  const seriesList = LANES.flatMap(l => l.seriesList || []).filter(Boolean);
+  const kalshiWS = new KalshiWS(kalshi.accounts,
+    (market) => { marketCache.set('ws:' + market.series_ticker, { at: Date.now(), market, source: 'ws' }); },
+    (fill) => { /* handle fill update */ },
+    (order) => { /* handle order update */ }
+  );
+  kalshiWS.connect();
+  kalshiWS.subscribeMarkets(seriesList);
+  kalshiWS.subscribeFills();
+  kalshiWS.subscribeOrders();
+
+  server.listen(PORT, HOST, () => {
     console.log('Kai-Mirror (DRY) listening on http://' + HOST + ':' + PORT + '/');
     console.log('  kalshi dry  :', kalshi.LIVE_BASE);
     console.log('  kalshi demo  :', kalshi.DEMO_BASE, '(fallback)');
@@ -1792,5 +2757,10 @@ async function boot() {
   });
 }
 
-if (require.main === module) boot();
+if (require.main === module) {
+  boot().catch(e => {
+    console.error('[boot] Fatal error:', e.message, e.stack);
+    process.exit(1);
+  });
+}
 module.exports = { handle, snapshotPayload, dryAccountPayload, cards, state, engineTick, pollSpot, noBook, dryBookPayload, openDryPosition, closeDryPosition, markDryPositions };

@@ -23,6 +23,14 @@ function loadEnv(file) {
     key = null; buf = [];
   };
   for (const line of lines) {
+    // Skip empty lines and comments
+    if (!line.trim() || line.trim().startsWith('#')) {
+      if (key && buf.length > 0) {
+        // If we were building a value and hit a comment/empty line, flush
+        flush();
+      }
+      continue;
+    }
     if (/^[A-Z0-9_]+\s*=/.test(line)) {
       flush();
       const i = line.indexOf('=');
@@ -32,7 +40,7 @@ function loadEnv(file) {
       buf.push(line);
     }
   }
-  flush();
+flush();
   return out;
 }
 
@@ -114,13 +122,87 @@ async function raw(acctName, method, route, opts) {
 }
 
 const cache = new Map();
+const CACHE_MAX_SIZE = 1000; // LRU eviction limit
+const cacheAccessOrder = new Set(); // For LRU tracking
+
 function cached(key, ttlMs, fn) {
   const hit = cache.get(key);
   const now = Date.now();
-  if (hit && now - hit.at < ttlMs) return Promise.resolve(hit.val);
-  return Promise.resolve(fn()).then(val => { cache.set(key, { at: now, val }); return val; },
-    err => { if (hit) return hit.val; throw err; });
+  if (hit && now - hit.at < ttlMs) {
+    // Update LRU order
+    cacheAccessOrder.delete(key);
+    cacheAccessOrder.add(key);
+    return Promise.resolve(hit.val);
+  }
+  return Promise.resolve(fn()).then(val => {
+    // Evict oldest if at capacity
+    if (cache.size >= CACHE_MAX_SIZE && !cache.has(key)) {
+      const oldestKey = cacheAccessOrder.values().next().value;
+      if (oldestKey) {
+        cacheAccessOrder.delete(oldestKey);
+        cache.delete(oldestKey);
+      }
+    }
+    cache.set(key, { at: now, val });
+    cacheAccessOrder.add(key);
+    return val;
+  }, err => { 
+    if (hit) return hit.val; 
+    throw err; 
+  });
 }
+
+// Cache statistics
+function getCacheStats() {
+  return {
+    size: cache.size,
+    maxSize: CACHE_MAX_SIZE,
+    keys: Array.from(cache.keys()).slice(0, 20)
+  };
+}
+
+// Clear cache
+function clearCache() {
+  cache.clear();
+  cacheAccessOrder.clear();
+}
+
+// Warm cache for critical endpoints
+async function warmCache() {
+  const criticalEndpoints = [
+    { route: '/portfolio/balance', opts: { query: {} } },
+    { route: '/markets', opts: { query: { limit: 5, status: 'open', series_ticker: 'KXBTC15M' } } },
+    { route: '/markets', opts: { query: { limit: 5, status: 'open', series_ticker: 'KXETH15M' } } },
+  ];
+  
+  let warmed = 0;
+  for (const { route, opts } of criticalEndpoints) {
+    const key = 'GET ' + route + ' ' + JSON.stringify(opts.query || {});
+    if (!cache.has(key)) {
+      try {
+        await cached(key, 1500, async () => {
+          const data = await raw('dry', 'GET', route, opts);
+          return { data, source: 'dry', host: LIVE_BASE, ms: 0, at: new Date().toISOString() };
+        });
+        warmed++;
+      } catch (e) {
+        console.warn('[cache] Warm failed for', route, e.message);
+      }
+    }
+  }
+  console.log('[cache] Warmed', warmed, 'endpoints');
+}
+
+// Periodic cache cleanup
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of cache.entries()) {
+    if (now - val.at > 300000) { // 5 minutes
+      cache.delete(key);
+      cacheAccessOrder.delete(key);
+    }
+  }
+}, 60000);
 
 // Live-first with demo fallback. Every return is stamped with provenance so the
 // dashboard (and the operator) can see exactly which host answered.
@@ -175,4 +257,4 @@ async function markets(series, limit) {
   return get('/markets', { query: { limit: limit || 5, status: 'open', series_ticker: series }, ttlMs: 1500 });
 }
 
-module.exports = { loadEnv, ENV, accounts, sign, raw, get, post, LIVE_BASE, DEMO_BASE, cache, portfolio, markets };
+module.exports = { loadEnv, ENV, accounts, sign, raw, get, post, LIVE_BASE, DEMO_BASE, cache, portfolio, markets, getCacheStats, clearCache, warmCache };

@@ -24,7 +24,14 @@ module.exports = {
   signalCrossExpiry,
   signalWhale,
   signalBlackScholes,
+  signalOrderFlow,
+  signalVolRP,
+  signalTermStruct,
+  signalFundingCarry,
+  signalCorrelationHedge,
+  signalSettlementAlpha,
   IDENTITY,
+  normCdf,
 };
 
 // ---------------------------------------------------------------------------
@@ -145,6 +152,210 @@ function signalBlackScholes(spotPrice, strike, tau, perSecVol) {
   return { side: fairUp > 0.5 ? "YES" : "NO", confidence: 0.3, edge: 0.0, reason: "black_scholes z=" + z.toFixed(3) };
 }
 
+// ===========================================================================
+// ADVANCED SIGNALS (NEW - high alpha potential)
+// ===========================================================================
+
+// 7. Order Flow Toxicity - bid/ask size ratio + recent fill direction
+// Detects informed flow: heavy buying on bid side = informed YES, heavy selling on ask = informed NO
+function signalOrderFlow(q, fills, history) {
+  if (!q || q.yes_bid_size == null || q.yes_ask_size == null) return null;
+  
+  const totalSize = q.yes_bid_size + q.yes_ask_size;
+  if (totalSize <= 0) return null;
+  
+  // Bid-ask size imbalance ratio
+  const bidRatio = q.yes_bid_size / totalSize;
+  if (bidRatio < 0.55 && bidRatio > 0.45) return null; // Need clear imbalance
+  
+  // Cross-check with recent fill direction if available
+  let fillSignal = 0;
+  if (fills && fills.length >= 10) {
+    const recentFills = fills.slice(-20);
+    const buyVolume = recentFills.filter(f => f.side === "YES").reduce((a, b) => a + b.quantity, 0);
+    const sellVolume = recentFills.filter(f => f.side === "NO").reduce((a, b) => a + b.quantity, 0);
+    const totalFillVol = buyVolume + sellVolume;
+    if (totalFillVol > 0) {
+      fillSignal = (buyVolume - sellVolume) / totalFillVol; // -1 to +1
+    }
+  }
+  
+  // Combine order book imbalance with fill direction
+  const combinedSignal = (bidRatio - 0.5) * 2 + fillSignal * 0.5; // weight book 2x fills
+  if (Math.abs(combinedSignal) < 0.2) return null;
+  
+  const side = combinedSignal > 0 ? "YES" : "NO";
+  const conf = Math.min(0.85, 0.4 + Math.abs(combinedSignal) * 1.5);
+  const edge = Math.abs(combinedSignal) * 0.01; // ~1c per 0.1 signal
+  
+  return { 
+    side, 
+    confidence: conf, 
+    edge, 
+    reason: "order_flow " + side + "_bidRatio=" + bidRatio.toFixed(2) + "_fillSig=" + fillSignal.toFixed(2),
+    source: "order_flow"
+  };
+}
+
+// 8. Volatility Risk Premium - sell high-IV NO when realized < implied
+// IV > RV = overpriced options = sell NO (YES side benefits from vol crush)
+function signalVolRP(q, perSecVol, realizedVol, tau) {
+  if (!q || q.no_ask == null || !perSecVol || !realizedVol || !tau || tau <= 0) return null;
+  
+  const impliedVol = perSecVol * Math.sqrt(252 * 3600 * 24); // annualize
+  const rvAnnualized = realizedVol * Math.sqrt(252 * 3600 * 24);
+  const volPremium = impliedVol - rvAnnualized;
+  
+  // Need meaningful vol premium (>10% annualized) and reasonable tau
+  if (volPremium < 0.10 || tau < 300 || tau > 86400) return null;
+  
+  // High vol premium -> NO is overpriced -> sell NO = buy YES
+  const side = "YES";
+  const conf = Math.min(0.7, 0.35 + volPremium * 2); // stronger premium = more confidence
+  const edge = volPremium * 0.001; // scale premium to edge
+  
+  return {
+    side,
+    confidence: conf,
+    edge: Math.min(edge, 0.02),
+    reason: "vol_rp iv=" + (impliedVol * 100).toFixed(1) + "%_rv=" + (rvAnnualized * 100).toFixed(1) + "%_premium=" + (volPremium * 100).toFixed(1) + "%",
+    source: "vol_rp"
+  };
+}
+
+// 9. Term Structure Arbitrage - compare fair value across expirations
+// Extends cross_expiry: uses BS fair value per expiration, not just raw ask
+function signalTermStruct(quotes, spotPrice, perSecVol) {
+  if (!quotes || quotes.length < 2 || !spotPrice || !perSecVol) return null;
+  
+  const bySeries = {};
+  for (const q of quotes) {
+    const s = String(q.ticker || "").split("-")[0];
+    if (!s) continue;
+    if (!bySeries[s]) bySeries[s] = [];
+    bySeries[s].push(q);
+  }
+  
+  for (const series of Object.keys(bySeries)) {
+    const group = bySeries[series];
+    if (group.length < 2) continue;
+    
+    // Calculate BS fair for each expiration
+    const withFair = group.map(q => {
+      if (!q.strike || !q.close_time) return null;
+      const tau = Math.max(60, (new Date(q.close_time).getTime() - Date.now()) / 1000);
+      if (tau <= 0) return null;
+      const vol = perSecVol || 0.0001;
+      const z = Math.log(spotPrice / q.strike) / (vol * Math.sqrt(tau));
+      const fairUp = normCdf(z);
+      return { ...q, fairUp, fairDown: 1 - fairUp, tau };
+    }).filter(x => x !== null);
+    
+    if (withFair.length < 2) continue;
+    
+    // Sort by tau (time to expiry)
+    withFair.sort((a, b) => a.tau - b.tau);
+    
+    // Look for term structure anomalies: near-term rich vs far-term cheap (or vice versa)
+    const near = withFair[0];
+    const far = withFair[withFair.length - 1];
+    
+    // Normalized fair value per sqrt(time) - should be roughly constant
+    const nearNorm = near.fairUp / Math.sqrt(near.tau / 86400);
+    const farNorm = far.fairUp / Math.sqrt(far.tau / 86400);
+    const diff = Math.abs(nearNorm - farNorm);
+    
+    if (diff < 0.02) continue; // Need meaningful term structure difference
+    
+    // If near-term is richer (higher normalized fair), sell near-term = buy far-term
+    // This is complex - for simplicity, trade the cheaper normalized fair
+    const side = nearNorm < farNorm ? "YES" : "NO"; // simplified
+    const target = nearNorm < farNorm ? near : far;
+    
+    const conf = Math.min(0.65, 0.35 + diff * 10);
+    const edge = diff * 0.005;
+    
+    return {
+      side,
+      confidence: conf,
+      edge: Math.min(edge, 0.015),
+      reason: "term_struct " + target.ticker + "_nearNorm=" + nearNorm.toFixed(3) + "_farNorm=" + farNorm.toFixed(3),
+      source: "term_struct"
+    };
+  }
+  return null;
+}
+
+// 10. Funding/Carry Arbitrage - crypto carry: fair = spot * exp(-r*tau) vs Kalshi price
+// For crypto markets with positive carry (r > 0), forward > spot -> YES overpriced in near-term
+function signalFundingCarry(spotPrice, strike, tau, perSecVol, riskFreeRate = 0.05) {
+  if (!spotPrice || !strike || !tau || tau <= 0) return null;
+  
+  // Forward price = spot * exp(r * tau_years)
+  const tauYears = tau / (365 * 24 * 3600);
+  const forward = spotPrice * Math.exp(riskFreeRate * tauYears);
+  
+  // Compare forward to strike - if forward > strike, YES is more likely
+  const moneyness = forward / strike;
+  
+  // Only trade if significant moneyness difference from 1
+  if (Math.abs(moneyness - 1) < 0.005) return null;
+  
+  const side = moneyness > 1 ? "YES" : "NO";
+  const edge = Math.abs(moneyness - 1) * 0.5; // 50% of moneyness diff as edge
+  const conf = Math.min(0.6, 0.3 + Math.abs(moneyness - 1) * 50);
+  
+  return {
+    side,
+    confidence: conf,
+    edge: Math.min(edge, 0.02),
+    reason: "funding_carry forward=" + forward.toFixed(2) + "_strike=" + strike + "_moneyness=" + moneyness.toFixed(4),
+    source: "funding_carry"
+  };
+}
+
+// 11. Correlation Hedge - portfolio heat: reduce size when correlated assets signal same side
+// If BTC + ETH both signal YES, reduce position size (correlation risk)
+function signalCorrelationHedge(lanes, state, currentLane) {
+  // This is a meta-signal - modifies other signals rather than generating its own
+  // Returns adjustment factor for position sizing
+  if (!lanes || !state || !currentLane) return { factor: 1.0 };
+  
+  // Count how many other active lanes have same signal direction
+  let sameDirectionCount = 0;
+  let totalActive = 0;
+  
+  // This would need access to other lanes' recent signals
+  // For now, return neutral - implement in evaluate() where we have full context
+  return { factor: 1.0, source: "correlation_hedge" };
+}
+
+// 12. Settlement Alpha - CF BRTI 60s TWAP vs Coinbase spot at settlement
+// Crypto markets settle to CF BRTI 60s TWAP. If Coinbase spot deviates systematically, edge exists.
+function signalSettlementAlpha(spotPrice, q, historicalDev) {
+  if (!q || !q.close_time || !spotPrice) return null;
+  
+  const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
+  if (tau > 3600) return null; // Only in final hour before settlement
+  
+  // Historical settlement deviation: CF BRTI vs Coinbase spot at settlement
+  // Positive dev = CF settles higher than Coinbase -> YES benefits
+  // This needs historical data - for now use provided parameter
+  if (!historicalDev || Math.abs(historicalDev) < 0.001) return null;
+  
+  const side = historicalDev > 0 ? "YES" : "NO";
+  const edge = Math.abs(historicalDev) * 0.5; // 50% of historical deviation
+  const conf = Math.min(0.75, 0.4 + Math.abs(historicalDev) * 100);
+  
+  return {
+    side,
+    confidence: conf,
+    edge: Math.min(edge, 0.02),
+    reason: "settlement_alpha dev=" + (historicalDev * 100).toFixed(2) + "%_tau=" + Math.round(tau) + "s",
+    source: "settlement_alpha"
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Regime classifier - determines which strategies to apply
 // ---------------------------------------------------------------------------
@@ -197,10 +408,49 @@ function evaluate(params) {
   }
 
   // Black-Scholes (DRY: theoretical)
-  if (spotPrice && strike && tau > 0) {
-    const bs = signalBlackScholes(spotPrice, strike, tau, perSecVol);
-    if (bs) signals.push(Object.assign(bs, { source: "black_scholes", weight: weights && weights.black_scholes != null ? weights.black_scholes : 0.15, identity }));
-  }
+    if (spotPrice && strike && tau > 0) {
+      const bs = signalBlackScholes(spotPrice, strike, tau, perSecVol);
+      if (bs) signals.push(Object.assign(bs, { source: "black_scholes", weight: weights && weights.black_scholes != null ? weights.black_scholes : 0.15, identity }));
+    }
+
+    // ===========================================================================
+    // ADVANCED SIGNALS (NEW - high alpha potential)
+    // ===========================================================================
+
+    // 7. Order Flow Toxicity (DRY: moderate weight, needs real fills)
+    if (q && q.yes_bid_size != null && q.yes_ask_size != null) {
+      const of = signalOrderFlow(q, fills, history);
+      if (of) signals.push(Object.assign(of, { source: "order_flow", weight: weights && weights.order_flow != null ? weights.order_flow : 0.65, identity }));
+    }
+
+    // 8. Volatility Risk Premium (DRY: moderate, needs realized vol)
+    if (q && perSecVol) {
+      const realizedVol = perSecondVol(q.series || "", 900); // rough approximation
+      const vrp = signalVolRP(q, perSecVol, realizedVol || perSecVol, tau);
+      if (vrp) signals.push(Object.assign(vrp, { source: "vol_rp", weight: weights && weights.vol_rp != null ? weights.vol_rp : 0.55, identity }));
+    }
+
+    // 9. Term Structure Arbitrage (DRY: moderate, needs multiple quotes)
+    if (quotes && quotes.length >= 2 && spotPrice && perSecVol) {
+      const ts = signalTermStruct(quotes, spotPrice, perSecVol);
+      if (ts) signals.push(Object.assign(ts, { source: "term_struct", weight: weights && weights.term_struct != null ? weights.term_struct : 0.45, identity }));
+    }
+
+    // 10. Funding/Carry Arbitrage (DRY: moderate, crypto-specific)
+    if (spotPrice && strike && tau > 0) {
+      const fc = signalFundingCarry(spotPrice, strike, tau, perSecVol);
+      if (fc) signals.push(Object.assign(fc, { source: "funding_carry", weight: weights && weights.funding_carry != null ? weights.funding_carry : 0.5, identity }));
+    }
+
+    // 11. Settlement Alpha (DRY: high weight, final hour only)
+    if (q && q.close_time && spotPrice) {
+      const tauSec = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
+      if (tauSec <= 3600) {
+        // historicalDev would come from historical analysis - placeholder 0 for now
+        const sa = signalSettlementAlpha(spotPrice, q, 0);
+        if (sa) signals.push(Object.assign(sa, { source: "settlement_alpha", weight: weights && weights.settlement_alpha != null ? weights.settlement_alpha : 0.7, identity }));
+      }
+    }
 
   if (signals.length === 0) return { side: null, confidence: 0, edge: 0, reason: "no signals", regime, signals: [], identity };
 
@@ -249,6 +499,11 @@ function signalStats() {
   // cross_expiry: 0.5 (needs multiple quotes)
   // whale: 0.3 (no real fills in DRY)
   // black_scholes: 0.15 (theoretical, lower confidence)
+  // order_flow: 0.65 (needs real fills, moderate)
+  // vol_rp: 0.55 (moderate, needs realized vol)
+  // term_struct: 0.45 (needs multiple quotes)
+  // funding_carry: 0.5 (crypto-specific, moderate)
+  // settlement_alpha: 0.7 (high weight, final hour only)
   return {
     arbitrage: 1.0,
     imbalance: 0.7,
@@ -256,6 +511,11 @@ function signalStats() {
     cross_expiry: 0.5,
     whale: 0.3,
     black_scholes: 0.15,
+    order_flow: 0.65,
+    vol_rp: 0.55,
+    term_struct: 0.45,
+    funding_carry: 0.5,
+    settlement_alpha: 0.7,
   };
 }
 
