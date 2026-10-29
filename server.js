@@ -619,7 +619,154 @@ function defaultState() {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
-    runtime: { clip: 5, min_edge: 0.001, max_price: 0.90, min_price: 0.05, take_profit: 0.90, stop_loss: 0.25, kelly_cap: 0.4, min_hold_sec: 30, entry_cooldown_sec: 60, max_hold_sec: 300, max_exposure_pct: 0.3, maker_only: true },
+    runtime: { 
+    clip: 5, 
+    min_edge: 0.001,      // DRY: very loose - we want trades for analysis
+    max_price: 0.95,      // DRY: allow higher prices
+    min_price: 0.02,      // DRY: allow very low prices
+    take_profit: 0.90, 
+    stop_loss: 0.25, 
+    kelly_cap: 0.5,       // DRY: higher kelly for more action
+    min_hold_sec: 15,     // DRY: shorter min hold
+    entry_cooldown_sec: 30, // DRY: faster cooldown
+    max_hold_sec: 300, 
+    max_exposure_pct: 0.5, // DRY: higher exposure allowed
+    maker_only: true 
+  },
+  // Lane-specific configurations - self-aware trading logic per lane
+  lane_configs: {
+    btc_updown: {
+      asset: 'BTC',
+      series: 'KXBTC15M',
+      horizon: '15m',
+      // BTC 15m: High liquidity, tight spreads - use tight thresholds
+      min_edge: 0.002,
+      min_confidence: 0.25,
+      entry_cooldown_sec: 45,
+      max_price: 0.85,
+      min_price: 0.10,
+      kelly_cap: 0.35,
+      preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
+      regime_avoid: ['wide_spread', 'arbitrage'],
+      description: 'BTC 15-min Up/Down — highest volume, tightest spreads. Fast mean-reversion. Signals: order_flow (toxicity), vol_rp (IV vs realized), black_scholes (fair value), imbalance (book pressure). Avoid: wide spreads, pure arbitrage (rare).',
+    },
+    eth_updown: {
+      asset: 'ETH',
+      series: 'KXETH15M',
+      horizon: '15m',
+      // ETH 15m: Good liquidity, slightly wider than BTC
+      min_edge: 0.0025,
+      min_confidence: 0.25,
+      entry_cooldown_sec: 60,
+      max_price: 0.85,
+      min_price: 0.10,
+      kelly_cap: 0.3,
+      preferred_signals: ['order_flow', 'funding_carry', 'black_scholes', 'imbalance'],
+      regime_avoid: ['wide_spread', 'arbitrage'],
+      description: 'ETH 15-min Up/Down — strong volume, funding carry matters. Signals: order_flow, funding_carry (ETH perp basis), black_scholes, imbalance. Avoid: wide spreads.',
+    },
+    xrp_updown: {
+      asset: 'XRP',
+      series: 'KXXRP15M',
+      horizon: '15m',
+      // XRP 15m: Lower liquidity, wider spreads - need more edge
+      min_edge: 0.003,
+      min_confidence: 0.3,
+      entry_cooldown_sec: 90,
+      max_price: 0.80,
+      min_price: 0.15,
+      kelly_cap: 0.25,
+      preferred_signals: ['vol_rp', 'term_struct', 'black_scholes', 'imbalance'],
+      regime_avoid: ['wide_spread', 'arbitrage'],
+      description: 'XRP 15-min Up/Down — lower liquidity, wider spreads. Needs vol_rp (IV vs realized) and term_struct (cross-expiry). Higher edge threshold. Avoid: wide spreads.',
+    },
+    btc_1h_updown: {
+      asset: 'BTC',
+      series: 'KXBTCD',
+      horizon: '1d',
+      // BTC Daily: Longer horizon, settlement alpha matters
+      min_edge: 0.0015,
+      min_confidence: 0.2,
+      entry_cooldown_sec: 300,
+      max_price: 0.90,
+      min_price: 0.05,
+      kelly_cap: 0.4,
+      preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
+      regime_avoid: ['arbitrage'],
+      description: 'BTC Daily Ladder — long horizon to settlement. Settlement alpha (CF BRTI vs spot) dominates final hour. Term structure and cross-expiry for curve trades. Longer cooldown.',
+    },
+    eth_1h_updown: {
+      asset: 'ETH',
+      series: 'KXETHD',
+      horizon: '1d',
+      min_edge: 0.002,
+      min_confidence: 0.25,
+      entry_cooldown_sec: 300,
+      max_price: 0.90,
+      min_price: 0.05,
+      kelly_cap: 0.35,
+      preferred_signals: ['settlement_alpha', 'funding_carry', 'term_struct', 'black_scholes'],
+      regime_avoid: ['arbitrage'],
+      description: 'ETH Daily Ladder — settlement alpha + funding carry (ETH basis). Term structure across expiries.',
+    },
+    xrp_1h_updown: {
+      asset: 'XRP',
+      series: 'KXXRPD',
+      horizon: '1d',
+      min_edge: 0.0025,
+      min_confidence: 0.3,
+      entry_cooldown_sec: 300,
+      max_price: 0.85,
+      min_price: 0.10,
+      kelly_cap: 0.3,
+      preferred_signals: ['settlement_alpha', 'vol_rp', 'term_struct'],
+      regime_avoid: ['wide_spread', 'arbitrage'],
+      description: 'XRP Daily Ladder — settlement focus with vol risk premium.',
+    },
+    hyperliquid_updown: {
+      asset: 'HYPE',
+      series: 'KXHYPE15M',
+      horizon: '15m',
+      // HYPE: Newer, volatile, lower liquidity
+      min_edge: 0.0035,
+      min_confidence: 0.35,
+      entry_cooldown_sec: 120,
+      max_price: 0.80,
+      min_price: 0.15,
+      kelly_cap: 0.2,
+      preferred_signals: ['order_flow', 'vol_rp', 'imbalance', 'black_scholes'],
+      regime_avoid: ['wide_spread', 'arbitrage'],
+      description: 'Hyperliquid 15-min Up/Down — volatile, lower liquidity. Higher edge/confidence needed. Order flow toxicity + vol_rp key. Tight kelly cap.',
+    },
+    hyperliquid_1h_updown: {
+      asset: 'HYPE',
+      series: 'KXHYPE',
+      horizon: '1h',
+      min_edge: 0.003,
+      min_confidence: 0.3,
+      entry_cooldown_sec: 180,
+      max_price: 0.85,
+      min_price: 0.10,
+      kelly_cap: 0.25,
+      preferred_signals: ['term_struct', 'vol_rp', 'black_scholes'],
+      regime_avoid: ['wide_spread', 'arbitrage'],
+      description: 'Hyperliquid 1-Hour — term structure across HYPE expiries. Vol risk premium.',
+    },
+    all_no_markets: {
+      asset: 'ALL',
+      series: 'ALL',
+      horizon: 'no-side',
+      min_edge: 0.008,
+      min_confidence: 0.4,
+      entry_cooldown_sec: 15,
+      max_price: 0.95,
+      min_price: 0.02,
+      kelly_cap: 0.25,
+      preferred_signals: ['black_scholes', 'vol_rp', 'term_struct'],
+      regime_avoid: ['wide_spread'],
+      description: 'ALL NO MARKETS — scans ALL Kalshi series for NO-side edge. High min_edge (0.8%), real quotes only. Vol-adjusted stops, 2.5:1 R:R. Maker at bid only.',
+    },
+  },
     signal_weights: brain.signalStats(),
     signal_outcomes: [],
     lanes: {},
@@ -1187,70 +1334,86 @@ async function engineTick() {
     if (tau < 10) { ls.skips++; ls.last_skip = 'contract closes in ' + Math.round(tau) + 's'; continue; }
     const perSec = perSecondVol(lane.spot, 900);
     
-        // Build params for brain evaluation
-        const volWindow = s.points.slice(-20).map(p => p.p);
-        const fills = [];
-        const allQuotes = (act.open_markets > 0) ? [q] : [];
+    // Get lane-specific config (self-aware trading logic)
+    const lc = state.lane_configs?.[lane.name] || {};
     
-        // Evaluate with ensemble brain
-        const result = brain.evaluate({
-          q, spotPrice: s.price, strike: q.strike, tau, perSecVol: perSec,
-          volWindow, fills, history: ls.price_history || [],
-          quotes: allQuotes, weights: state.signal_weights
-        });
-    
-        ls.last_edge = result.edge || 0;
-        ls.last_brain = JSON.stringify({ side: result.side, confidence: result.confidence, reason: result.reason, regime: result.regime });
-        ls.heartbeat = new Date().toISOString();
-    
-        if (!result.side) { ls.skips++; ls.last_skip = result.reason || 'no signal'; continue; }
-    
-        // Regime filter: skip toxic regimes
-        if (result.regime === 'wide_spread' || result.regime === 'arbitrage') {
-          ls.skips++; ls.last_skip = 'regime filter: ' + result.regime; continue;
-        }
-    
-        const side = result.side;
-        // Maker entry: use bid instead of ask
-        const price = side === 'YES' ? q.yes_bid : q.no_bid;
-        if (price == null) { ls.skips++; ls.last_skip = 'no bid on ' + side; continue; }
-        if (price >= state.runtime.max_price) { ls.skips++; ls.last_skip = 'entry price ' + price + ' in blocked band'; continue; }
-        if (price < state.runtime.min_price) { ls.skips++; ls.last_skip = 'entry price ' + price + ' below floor'; continue; }
-        if (result.edge < state.runtime.min_edge) { ls.skips++; ls.last_skip = 'no edge (' + result.edge.toFixed(4) + ' < ' + state.runtime.min_edge + ')'; continue; }
-        if (result.confidence < 0.3) { ls.skips++; ls.last_skip = 'low confidence (' + result.confidence.toFixed(2) + ')'; continue; }
-    
-        // Portfolio heat check
-        const totalExposure = state.dry.positions.reduce((a, p) => a + p.cost, 0);
-        if (totalExposure > dryCash() * 0.3) { ls.skips++; ls.last_skip = 'portfolio heat limit'; continue; }
-    
-        // Kelly sizing check
-        const kellyFraction = Math.max(0, result.edge / (1 - price));
-        if (kellyFraction < 0.02) { ls.skips++; ls.last_skip = 'kelly too small'; continue; }
-    
-        const lastEntry = ls.last_entry_at ? Date.now() - ls.last_entry_at : Infinity;
-        const cooldown = Number(state.runtime.entry_cooldown_sec || 60) * 1000;
-        if (lastEntry < cooldown) { ls.skips++; ls.last_skip = 'cooldown ' + Math.ceil((cooldown - lastEntry) / 1000) + 's'; continue; }
-    
-        const held = state.dry.positions.filter(p => p.strategy === lane.name).length;
-        if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
-    
-        // Max hold time check
-        const maxHoldMs = state.runtime.max_hold_sec * 1000 || 300000;
-        if (ls.last_entry_at && (Date.now() - ls.last_entry_at) > maxHoldMs) {
-          ls.skips++; ls.last_skip = 'max hold time exceeded'; continue;
-        }
-    
-        const fair = side === 'YES' ? (q.yes_bid + result.edge) : (q.no_bid + result.edge);
-            // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
-            // Enforce: operator's last button push is absolute law.
-            OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
-            if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
-        const opened = state.mode === 'dry'
-          ? await openDryPosition(lane, q, side, price, fair, result.edge, perSec)
-          : openDryPosition(lane, q, side, price, fair, result.edge, perSec);
-        if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
-      }
+    // Build params for brain evaluation
+    const volWindow = s.points.slice(-20).map(p => p.p);
+    const fills = [];
+    const allQuotes = (act.open_markets > 0) ? [q] : [];
+
+    // Evaluate with ensemble brain
+    const result = brain.evaluate({
+      q, spotPrice: s.price, strike: q.strike, tau, perSecVol: perSec,
+      volWindow, fills, history: ls.price_history || [],
+      quotes: allQuotes, weights: state.signal_weights
+    });
+
+    ls.last_edge = result.edge || 0;
+    ls.last_brain = JSON.stringify({ side: result.side, confidence: result.confidence, reason: result.reason, regime: result.regime });
+    ls.heartbeat = new Date().toISOString();
+
+    if (!result.side) { ls.skips++; ls.last_skip = result.reason || 'no signal'; continue; }
+
+    // Regime filter: skip toxic regimes (use lane-specific avoid list)
+    if (lc.regime_avoid && lc.regime_avoid.includes(result.regime)) {
+      ls.skips++; ls.last_skip = 'regime filter: ' + result.regime; continue;
     }
+
+    const side = result.side;
+    // Maker entry: use bid instead of ask
+    const price = side === 'YES' ? q.yes_bid : q.no_bid;
+    if (price == null) { ls.skips++; ls.last_skip = 'no bid on ' + side; continue; }
+    
+    // Lane-specific price bounds (DRY: looser for analysis)
+    const maxPrice = lc.max_price ?? state.runtime.max_price;
+    const minPrice = lc.min_price ?? state.runtime.min_price;
+    if (price >= maxPrice) { ls.skips++; ls.last_skip = 'entry price ' + price + ' in blocked band'; continue; }
+    if (price < minPrice) { ls.skips++; ls.last_skip = 'entry price ' + price + ' below floor'; continue; }
+    
+    // Lane-specific edge threshold (DRY: looser for analysis)
+    const minEdge = lc.min_edge ?? state.runtime.min_edge;
+    if (result.edge < minEdge) { ls.skips++; ls.last_skip = 'no edge (' + result.edge.toFixed(4) + ' < ' + minEdge + ')'; continue; }
+    
+    // Lane-specific confidence threshold (DRY: looser for analysis)
+    const minConf = lc.min_confidence ?? 0.3;
+    if (result.confidence < minConf) { ls.skips++; ls.last_skip = 'low confidence (' + result.confidence.toFixed(2) + ' < ' + minConf + ')'; continue; }
+
+    // Portfolio heat check (lane-specific exposure)
+    const totalExposure = state.dry.positions.reduce((a, p) => a + p.cost, 0);
+    const maxExposurePct = lc.max_exposure_pct ?? state.runtime.max_exposure_pct ?? 0.3;
+    if (totalExposure > dryCash() * maxExposurePct) { ls.skips++; ls.last_skip = 'portfolio heat limit'; continue; }
+
+    // Kelly sizing check (lane-specific)
+    const kellyFraction = Math.max(0, result.edge / (1 - price));
+    const kellyCap = lc.kelly_cap ?? state.runtime.kelly_cap ?? 0.4;
+    if (kellyFraction < 0.01) { ls.skips++; ls.last_skip = 'kelly too small'; continue; }
+
+    const lastEntry = ls.last_entry_at ? Date.now() - ls.last_entry_at : Infinity;
+    const cooldownSec = lc.entry_cooldown_sec ?? state.runtime.entry_cooldown_sec ?? 60;
+    const cooldown = Number(cooldownSec) * 1000;
+    if (lastEntry < cooldown) { ls.skips++; ls.last_skip = 'cooldown ' + Math.ceil((cooldown - lastEntry) / 1000) + 's'; continue; }
+
+    const held = state.dry.positions.filter(p => p.strategy === lane.name).length;
+    if (held >= 1) { ls.skips++; ls.last_skip = 'already holding'; continue; }
+
+    // Max hold time check
+    const maxHoldMs = state.runtime.max_hold_sec * 1000 || 300000;
+    if (ls.last_entry_at && (Date.now() - ls.last_entry_at) > maxHoldMs) {
+      ls.skips++; ls.last_skip = 'max hold time exceeded'; continue;
+    }
+
+    const fair = side === 'YES' ? (q.yes_bid + result.edge) : (q.no_bid + result.edge);
+    // OPERATOR_LAW: if the operator stopped this lane mid-tick, place NO order.
+    // Enforce: operator's last button push is absolute law.
+    OPERATOR_LAW.enforce('engineTick mid-tick check', { lane: lane.name, running: ls.running });
+    if (!ls.running) { ls.skips++; ls.last_skip = 'operator stop (mid-tick)'; continue; }
+    const opened = state.mode === 'dry'
+      ? await openDryPosition(lane, q, side, price, fair, result.edge, perSec)
+      : openDryPosition(lane, q, side, price, fair, result.edge, perSec);
+    if (opened) { ls.last_entry_at = Date.now(); ls.pending_edge = null; }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // DRY account (real, read-only)
