@@ -8,6 +8,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const HERE = __dirname;
+// Use api.elections.kalshi.com for LIVE (this is the authenticated endpoint)
 const LIVE_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 const DEMO_BASE = 'https://demo-api.kalshi.co/trade-api/v2';
 
@@ -40,15 +41,44 @@ function loadEnv(file) {
       buf.push(line);
     }
   }
-flush();
+  flush();
   return out;
 }
 
 const ENV = loadEnv();
 
 const accounts = {
-  dry: { keyId: (ENV.KALSHI_LIVE_KEY_ID || '').trim(), pem: (ENV.KALSHI_LIVE_PRIVATE_KEY || '').trim(), base: LIVE_BASE, name: 'dry' },
-  demo: { keyId: (ENV.KALSHI_DEMO_KEY_ID || '').trim(), pem: (ENV.KALSHI_DEMO_PRIVATE_KEY || '').trim(), base: DEMO_BASE, name: 'demo' },
+  // DRY mode: uses live API credentials but paper trading (simulated fills)
+  dry: { 
+    keyId: (ENV.KALSHI_LIVE_KEY_ID || '').trim(), 
+    pem: (ENV.KALSHI_LIVE_PRIVATE_KEY || '').trim(), 
+    base: LIVE_BASE, 
+    name: 'dry' 
+  },
+  // LIVE mode: real Kalshi account with shard support
+  // Shard accounts are separate exchange_index for different trading segments
+  // (crypto, politics, sports, etc.) that don't appear on web/app UI
+  live: { 
+    keyId: (ENV.KALSHI_LIVE_KEY_ID || '').trim(), 
+    pem: (ENV.KALSHI_LIVE_PRIVATE_KEY || '').trim(), 
+    base: LIVE_BASE, 
+    name: 'live',
+    // Shard exchange_index values - user must provide these
+    // exchange_index 0 = primary, 1+ = category-specific shards
+    shards: {
+      crypto: parseInt(ENV.KALSHI_SHARD_CRYPTO) || 0,
+      politics: parseInt(ENV.KALSHI_SHARD_POLITICS) || 0,
+      sports: parseInt(ENV.KALSHI_SHARD_SPORTS) || 0,
+      finance: parseInt(ENV.KALSHI_SHARD_FINANCE) || 0,
+    },
+    subaccount: parseInt(ENV.KALSHI_SUBACCOUNT) || 0,
+  },
+  demo: { 
+    keyId: (ENV.KALSHI_DEMO_KEY_ID || '').trim(), 
+    pem: (ENV.KALSHI_DEMO_PRIVATE_KEY || '').trim(), 
+    base: DEMO_BASE, 
+    name: 'demo' 
+  },
 };
 
 function sign(acct, method, fullPath, ts, scheme) {
@@ -70,22 +100,38 @@ function buildUrl(acct, route, query) {
 // /portfolio/positions and /portfolio/fills reject a signature that includes
 // the query string (401 INCORRECT_API_KEY_SIGNATURE) while /markets accepts it.
 // So each request tries the variants and keeps the one that worked.
+// CRITICAL: Cache strategy PER ROUTE because different endpoints need different signing
 const ALL_STRATEGIES = [
   { scheme: 'pss', withQuery: true },
   { scheme: 'pss', withQuery: false },
   { scheme: 'pkcs1', withQuery: true },
   { scheme: 'pkcs1', withQuery: false },
 ];
-const strategyCache = {};
+const strategyCache = {}; // key: "acctName:route"
 
 async function raw(acctName, method, route, opts) {
   opts = opts || {};
   const acct = accounts[acctName];
   if (!acct || !acct.keyId || !acct.pem) throw new Error('no credentials for ' + acctName);
-  const { url, fullPath } = buildUrl(acct, route, opts.query);
+  
+  // Build query params with shard support for live account
+  const query = Object.assign({}, opts.query || {});
+  if (acctName === 'live' && acct.shards) {
+    // For portfolio endpoints, add exchange_index and subaccount
+    const portfolioRoutes = ['/portfolio/balance', '/portfolio/positions', '/portfolio/fills', '/portfolio/orders'];
+    if (portfolioRoutes.some(r => route.startsWith(r))) {
+      query.exchange_index = acct.shards.crypto || 0;
+      query.subaccount = acct.subaccount || 0;
+    }
+  }
+  
+  const { url, fullPath } = buildUrl(acct, route, query);
   const pathNoQuery = '/trade-api/v2' + route;
-  const strategies = strategyCache[acctName]
-    ? [strategyCache[acctName]].concat(ALL_STRATEGIES.filter(s => s !== strategyCache[acctName]))
+  
+  // Strategy cache keyed by account + route (different endpoints need different signing)
+  const cacheKey = acctName + ':' + route;
+  const strategies = strategyCache[cacheKey]
+    ? [strategyCache[cacheKey]].concat(ALL_STRATEGIES.filter(s => s !== strategyCache[cacheKey]))
     : ALL_STRATEGIES;
   let lastErr = null;
   for (const st of strategies) {
@@ -110,11 +156,17 @@ async function raw(acctName, method, route, opts) {
     let parsed = null;
     try { parsed = text ? JSON.parse(text) : null; } catch (e) { parsed = { raw: text }; }
     if (r.ok) {
-      strategyCache[acctName] = st;
+      strategyCache[cacheKey] = st;
       return parsed;
     }
     lastErr = new Error('HTTP ' + r.status + ' ' + method + ' ' + fullPath + ' :: ' + text.slice(0, 300));
     lastErr.status = r.status;
+    // Rate limit - retry after delay
+    if (r.status === 429) {
+      const retryAfter = parseInt(r.headers.get('retry-after') || '2') * 1000;
+      await new Promise(resolve => setTimeout(resolve, retryAfter));
+      continue;
+    }
     if (r.status === 401) continue;
     break;
   }

@@ -28,6 +28,52 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const WebSocket = require('ws');
+
+// ===========================================================================
+// REQUEST THROTTLE - protects PC from API overload
+// ===========================================================================
+const THROTTLE = {
+  maxConcurrent: 3,           // max simultaneous requests
+  minIntervalMs: 500,         // min ms between requests
+  queue: [],
+  running: 0,
+  lastRequestTime: 0,
+  
+  async run(fn) {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ fn, resolve, reject });
+      this.process();
+    });
+  },
+  
+  async process() {
+    while (this.queue.length && this.running < this.maxConcurrent) {
+      const now = Date.now();
+      const wait = Math.max(0, this.minIntervalMs - (now - this.lastRequestTime));
+      if (wait > 0) {
+        await new Promise(r => setTimeout(r, wait));
+      }
+      const { fn, resolve, reject } = this.queue.shift();
+      this.running++;
+      this.lastRequestTime = Date.now();
+      try {
+        const result = await fn();
+        resolve(result);
+      } catch (e) {
+        reject(e);
+      } finally {
+        this.running--;
+        this.process();
+      }
+    }
+  }
+};
+
+// Wrap kalshi.raw with throttle
+const originalKalshiRaw = require('./kalshi.js').raw;
+require('./kalshi.js').raw = async function(acctName, method, route, opts) {
+  return THROTTLE.run(() => originalKalshiRaw(acctName, method, route, opts));
+};
 const sqlite3 = require('sqlite3').verbose();
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');

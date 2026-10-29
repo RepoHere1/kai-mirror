@@ -25,7 +25,7 @@ class KalshiWS {
     }
 
     try {
-      const wsUrl = 'wss://api.elections.kalshi.com/trade-api/ws/v2';
+      const wsUrl = 'wss://external-api.kalshi.com/trade-api/ws/v2';
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -58,7 +58,13 @@ class KalshiWS {
     };
 
     this.ws.onerror = (err) => {
-      console.error('[KalshiWS] Error:', err?.message || err?.code || JSON.stringify(err) || 'unknown error');
+      try {
+        const msg = err?.message || err?.code || (err && typeof err === 'object' ? JSON.stringify(err) : String(err)) || 'unknown error';
+        console.error('[KalshiWS] Error:', msg);
+      } catch (e) {
+        console.error('[KalshiWS] Error (failed to format):', String(e));
+      }
+      // Prevent any error in error handler from propagating
     };
   }
 
