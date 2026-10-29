@@ -1,12 +1,8 @@
-LIVE wiring complete: shards, throttle, signature fix, real Kalshi API
+LIVE fully wired: shards, auth fix, real Kalshi API working
 
-- Fixed Kalshi signature strategy cache: now per-route (different endpoints need different signing: markets=with query, portfolio/balance=without query)
-- Added REQUEST THROTTLE to both servers: max 3 concurrent, 500ms min interval between requests
-- Added Kalshi shard support: exchange_index (0=primary, 1+=crypto/politics/sports/finance) and subaccount (0=primary, 1-63=additional)
-- LIVE server now uses brain_live.js and connects to real Kalshi API (api.elections.kalshi.com)
-- LIVE accounts endpoint returns real data from Kalshi portfolio/balance, positions, fills
-- Found 24 closed trades on LIVE account (100% win rate - all NO side)
-- DRY server: paper balance $303, all lanes running
-- LIVE server: real Kalshi account connected, lanes stopped (safe default)
-- Kalshi WS now uses external-api.kalshi.com for authenticated WebSocket
-- .env files updated with shard account placeholders (user must fill in KALSHI_SHARD_CRYPTO etc.)
+- Fixed Kalshi signature strategy: portfolio endpoints now try withQuery: false first
+- Added PORTFOLIO_STRATEGIES for /portfolio/* routes (no query string in signature)
+- Shard accounts populated from API: crypto=exchange_index 2, politics=1, sports=3, finance=0
+- LIVE accounts endpoint returns real data: 100 closed trades, 100% win rate
+- DRY: $303 paper, all lanes running
+- Both servers running with request throttle (max 3 concurrent, 500ms interval)
