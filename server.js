@@ -985,7 +985,7 @@ async function activeQuote(lane) {
     });
     
     // Filter to markets with reasonable fair value
-    const fairMarkets = marketsWithFair.filter(m => m.fair >= 0.05 && m.fair <= 0.95);
+    const fairMarkets = marketsWithFair.filter(m => m.fair >= 0.05 && m.fair <= 0.95 && m.close_time && (new Date(m.close_time).getTime() - Date.now()) >= 60000);
     if (!fairMarkets.length) continue;
     
     // Pick closest to spot, but prefer markets with reasonable time to expiration
@@ -1761,11 +1761,12 @@ async function noBook() {
       if (q.status === 'finalized' || q.result) continue;
       if (!q.strike || !q.close_time) continue;
       
-      const sp = spot.BTC ? spot.BTC : spot.ETH ? spot.ETH : null; // fallback spot
+      const asset = s.startsWith('KXB') ? 'BTC-USD' : s.startsWith('KXE') ? 'ETH-USD' : s.startsWith('KXX') ? 'XRP-USD' : s.startsWith('KXH') ? 'HYPE-USD' : null;
+      const sp = asset ? spot[asset] : null;
       if (!sp || !Number.isFinite(sp.price)) continue;
       
       // Compute fair value using Black-Scholes normal CDF
-      const perSec = perSecondVol('BTC', 900); // use BTC vol as proxy
+      const perSec = perSecondVol(asset, 900);
       const tau = Math.max(0, (new Date(q.close_time).getTime() - Date.now()) / 1000);
       if (tau < 30 || tau > 3600) continue; // only 30s-1hr contracts
       
@@ -1784,8 +1785,8 @@ async function noBook() {
       if (spread > 0.05) continue; // skip wide spreads
       
       // Edge = fair - ask (we buy NO at ask, fair says NO should be 1-fair)
-      const edge = (1 - fair) - no_ask;
-      if (edge < 0.008) continue; // MINIMUM 0.8% edge - raised from 0.1%
+      const edge = fair - no_ask; // fair is the NO probability; edge = model NO fair - NO ask
+      if (edge < 0.004) continue; // MINIMUM 0.4% edge
       
       // Kelly with cap
       const kelly = Math.max(0, edge / (1 - no_ask));
@@ -1840,8 +1841,8 @@ async function noBook() {
 // Fetch ALL tradable Kalshi series (not just LANES)
 async function getAllTradableSeries() {
   try {
-    const res = await kalshi.raw('GET', '/trade-api/v2/markets?status=open&limit=500');
-    const data = await res.json();
+    const data = await kalshi.raw('dry', 'GET', '/markets', { query: { status: 'open', limit: 500 } });
+    
     const seriesSet = new Set();
     for (const m of data.markets || []) {
       const s = m.series_ticker || m.ticker.split('-')[0];
@@ -2712,11 +2713,11 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // Runtime config for ALL NO engine and lane improvements
 const ALL_NO_CONFIG = {
-  scan_interval_ms: 15000,        // slower scan, higher quality
-  max_concurrent: 5,              // fewer concurrent positions
-  max_exposure_pct: 0.2,          // 20% max exposure
+  scan_interval_ms: 10000,        // scan cadence
+  max_concurrent: 10,             // more concurrent positions
+  max_exposure_pct: 0.4,          // 40% max exposure (paper)
   kelly_cap: 0.25,                // 25% Kelly cap
-  min_edge: 0.008,                // 0.8% minimum edge (was 0.1%)
+  min_edge: 0.004,                // 0.4% minimum edge
   min_vol: 0.0001,
   max_gap: 0.01,
   maker_only: true,
@@ -2728,7 +2729,7 @@ const ALL_NO_CONFIG = {
   max_spread: 0.04,               // maximum spread
   min_tau_sec: 30,                // minimum time to expiry
   max_tau_sec: 3600,              // maximum time to expiry
-  min_confidence: 0.4,            // minimum confidence
+  min_confidence: 0.3,            // minimum confidence
 };
 
 async function runAllNoEngine() {
