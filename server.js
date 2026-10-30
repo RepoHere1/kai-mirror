@@ -1840,20 +1840,26 @@ async function noBook() {
 
 // Fetch ALL tradable Kalshi series (not just LANES)
 async function getAllTradableSeries() {
+  // Bounded scan: the crypto lane series always, then the most liquid open series, max 30.
+  // An unbounded scan made hundreds of rate-limited Kalshi calls per pass and never finished.
   try {
     const data = await kalshi.raw('dry', 'GET', '/markets', { query: { status: 'open', limit: 500 } });
-    
-    const seriesSet = new Set();
+    const bySeries = new Map();
     for (const m of data.markets || []) {
-      const s = m.series_ticker || m.ticker.split('-')[0];
-      if (s) seriesSet.add(s);
+      const s = m.series_ticker || String(m.ticker || '').split('-')[0];
+      if (!s) continue;
+      const rec = bySeries.get(s) || { oi: 0 };
+      rec.oi += Number(m.open_interest_fp) || 0;
+      bySeries.set(s, rec);
     }
-    return Array.from(seriesSet);
+    const lanesSeries = Array.from(new Set(LANES.flatMap(l => l.seriesList || []).filter(Boolean)));
+    const ranked = Array.from(bySeries.entries()).map(([s, r]) => ({ s, oi: r.oi })).sort((a, b) => b.oi - a.oi).map(x => x.s);
+    return Array.from(new Set([...lanesSeries, ...ranked])).slice(0, 30);
   } catch (e) {
     // Fallback to LANES series
     return Array.from(new Set(LANES.flatMap(l => l.seriesList || []).filter(Boolean)));
   }
-}
+}  
 // ---------------------------------------------------------------------------
 // ALL NO MARKETS - Entry/Exit Trade Functions
 // ---------------------------------------------------------------------------
