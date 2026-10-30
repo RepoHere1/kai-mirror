@@ -9,9 +9,6 @@ const crypto = require('crypto');
 
 const HERE = __dirname;
 // Use api.kalshi.com for LIVE (main Kalshi platform), elections.kalshi.com for elections-only
-const LIVE_BASE = process.env.KALSHI_LIVE_BASE || 'https://api.kalshi.com/trade-api/v2';
-const DEMO_BASE = 'https://demo-api.kalshi.co/trade-api/v2';
-
 function loadEnv(file) {
   const out = {};
   const p = file || path.join(HERE, '.env');
@@ -46,6 +43,8 @@ function loadEnv(file) {
 }
 
 const ENV = loadEnv();
+const LIVE_BASE = ENV.KALSHI_LIVE_BASE || process.env.KALSHI_LIVE_BASE || 'https://api.kalshi.com/trade-api/v2';
+const DEMO_BASE = 'https://demo-api.kalshi.co/trade-api/v2';
 
 const accounts = {
   // DRY mode: uses live API credentials but paper trading (simulated fills)

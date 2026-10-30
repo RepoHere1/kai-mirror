@@ -622,18 +622,30 @@ function defaultState() {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
     runtime: { 
-    clip: 10, 
-    min_edge: 0.0005,      // Even looser for more trades
-    max_price: 0.97,      // Allow near-settlement prices
-    min_price: 0.01,      // Allow very low prices
-    take_profit: 0.95, 
-    stop_loss: 0.15, 
-    kelly_cap: 0.8,       // Higher kelly
-    min_hold_sec: 10,     // Very short min hold
-    entry_cooldown_sec: 15, // Very fast cooldown
-    max_hold_sec: 180, 
-    max_exposure_pct: 0.8, // Higher exposure
-    maker_only: true 
+    clip: 15,
+    min_edge: 0.0003,
+    max_price: 0.99,
+    min_price: 0.005,
+    take_profit: 0.98,
+    stop_loss: 0.1,
+    kelly_cap: 0.95,
+    min_hold_sec: 5,
+    entry_cooldown_sec: 5,
+    max_hold_sec: 120,
+    max_exposure_pct: 0.95,
+    maker_only: true,
+    all_no: {
+      max_exposure_pct: 0.5,
+      max_concurrent: 20,
+      min_edge: 0.003,
+      min_confidence: 0.2,
+      min_spread: 0.005,
+      max_spread: 0.3,
+      min_tau_sec: 30,
+      max_tau_sec: 1800,
+      max_hold_pct: 0.9,
+      scan_interval_ms: 5000
+    },
   },
   // Lane-specific configurations - self-aware trading logic per lane
   lane_configs: {
@@ -705,12 +717,12 @@ function defaultState() {
       asset: 'ALL',
       series: 'ALL',
       horizon: 'no-side',
-      min_edge: 0.008,
-      min_confidence: 0.4,
-      entry_cooldown_sec: 15,
-      max_price: 0.95,
-      min_price: 0.02,
-      kelly_cap: 0.25,
+      min_edge: 0.002,
+      min_confidence: 0.15,
+      entry_cooldown_sec: 3,
+      max_price: 0.98,
+      min_price: 0.005,
+      kelly_cap: 0.6,
       preferred_signals: ['black_scholes', 'vol_rp', 'term_struct'],
       regime_avoid: ['wide_spread'],
       description: 'ALL NO MARKETS — scans ALL Kalshi series for NO-side edge. High min_edge (0.8%), real quotes only. Vol-adjusted stops, 2.5:1 R:R. Maker at bid only.',
@@ -976,14 +988,18 @@ async function activeQuote(lane) {
     const fairMarkets = marketsWithFair.filter(m => m.fair >= 0.05 && m.fair <= 0.95);
     if (!fairMarkets.length) continue;
     
-    // Pick closest to spot
+    // Pick closest to spot, but prefer markets with reasonable time to expiration
     let pick = fairMarkets[0];
     if (s && Number.isFinite(s.price)) {
-      let bestDiff = Infinity;
+      let bestScore = -Infinity;
       for (const m of fairMarkets) {
-        if (m.strike == null) continue;
+        if (m.strike == null || !m.close_time) continue;
+        const tau = Math.max(0, (new Date(m.close_time).getTime() - Date.now()) / 1000);
+        if (tau < 30) continue; // Skip markets expiring in < 30 seconds
         const d = Math.abs(Math.log(s.price / m.strike));
-        if (d < bestDiff) { bestDiff = d; pick = m; }
+        // Score: closer strike = higher, longer tau = higher
+        const score = 1 / (1 + d) * Math.min(1, tau / 300);
+        if (score > bestScore) { bestScore = score; pick = m; }
       }
     } else {
       pick = fairMarkets.slice().sort((a, b) => new Date(a.close_time) - new Date(b.close_time))[0];
@@ -2899,6 +2915,7 @@ async function boot() {
   setInterval(async () => {
     for (const lane of LANES) {
       if (!lane.seriesList || !lane.seriesList.length) continue;
+      if (!laneState(lane.name).running) continue; // read budget: quote only running lanes
       for (const s of lane.seriesList) await marketsForSeries(s, 5);
     }
   }, 5000);
