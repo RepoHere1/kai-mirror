@@ -29,51 +29,7 @@ const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const WebSocket = require('ws');
 
-// ===========================================================================
-// REQUEST THROTTLE - protects PC from API overload
-// ===========================================================================
-const THROTTLE = {
-  maxConcurrent: 3,           // max simultaneous requests
-  minIntervalMs: 500,         // min ms between requests
-  queue: [],
-  running: 0,
-  lastRequestTime: 0,
-  
-  async run(fn) {
-    return new Promise((resolve, reject) => {
-      this.queue.push({ fn, resolve, reject });
-      this.process();
-    });
-  },
-  
-  async process() {
-    while (this.queue.length && this.running < this.maxConcurrent) {
-      const now = Date.now();
-      const wait = Math.max(0, this.minIntervalMs - (now - this.lastRequestTime));
-      if (wait > 0) {
-        await new Promise(r => setTimeout(r, wait));
-      }
-      const { fn, resolve, reject } = this.queue.shift();
-      this.running++;
-      this.lastRequestTime = Date.now();
-      try {
-        const result = await fn();
-        resolve(result);
-      } catch (e) {
-        reject(e);
-      } finally {
-        this.running--;
-        this.process();
-      }
-    }
-  }
-};
 
-// Wrap kalshi.raw with throttle
-const originalKalshiRaw = require('./kalshi.js').raw;
-require('./kalshi.js').raw = async function(acctName, method, route, opts) {
-  return THROTTLE.run(() => originalKalshiRaw(acctName, method, route, opts));
-};
 const sqlite3 = require('sqlite3').verbose();
 const kalshi = require('./kalshi');
 const kilo = require('./kilo');
@@ -666,137 +622,84 @@ function defaultState() {
       dry: { starting_balance: allNoStart, balance: allNoStart, positions: [], closed_trades: [], total_pnl: 0, entries: 0 },
     },
     runtime: { 
-    clip: 5, 
-    min_edge: 0.001,      // DRY: very loose - we want trades for analysis
-    max_price: 0.95,      // DRY: allow higher prices
-    min_price: 0.02,      // DRY: allow very low prices
-    take_profit: 0.90, 
-    stop_loss: 0.25, 
-    kelly_cap: 0.5,       // DRY: higher kelly for more action
-    min_hold_sec: 15,     // DRY: shorter min hold
-    entry_cooldown_sec: 30, // DRY: faster cooldown
-    max_hold_sec: 300, 
-    max_exposure_pct: 0.5, // DRY: higher exposure allowed
+    clip: 10, 
+    min_edge: 0.0005,      // Even looser for more trades
+    max_price: 0.97,      // Allow near-settlement prices
+    min_price: 0.01,      // Allow very low prices
+    take_profit: 0.95, 
+    stop_loss: 0.15, 
+    kelly_cap: 0.8,       // Higher kelly
+    min_hold_sec: 10,     // Very short min hold
+    entry_cooldown_sec: 15, // Very fast cooldown
+    max_hold_sec: 180, 
+    max_exposure_pct: 0.8, // Higher exposure
     maker_only: true 
   },
   // Lane-specific configurations - self-aware trading logic per lane
   lane_configs: {
     btc_updown: {
-      asset: 'BTC',
-      series: 'KXBTC15M',
-      horizon: '15m',
-      // BTC 15m: High liquidity, tight spreads - use tight thresholds
-      min_edge: 0.002,
-      min_confidence: 0.25,
-      entry_cooldown_sec: 45,
-      max_price: 0.85,
-      min_price: 0.10,
-      kelly_cap: 0.35,
+      asset: 'BTC', series: 'KXBTC15M', horizon: '15m',
+      min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 20,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'BTC 15-min Up/Down — highest volume, tightest spreads. Fast mean-reversion. Signals: order_flow (toxicity), vol_rp (IV vs realized), black_scholes (fair value), imbalance (book pressure). Avoid: wide spreads, pure arbitrage (rare).',
+      description: 'BTC 15-min Up/Down — highest volume, tightest spreads. Fast mean-reversion.',
     },
     eth_updown: {
-      asset: 'ETH',
-      series: 'KXETH15M',
-      horizon: '15m',
-      // ETH 15m: Good liquidity, slightly wider than BTC
-      min_edge: 0.0025,
-      min_confidence: 0.25,
-      entry_cooldown_sec: 60,
-      max_price: 0.85,
-      min_price: 0.10,
-      kelly_cap: 0.3,
+      asset: 'ETH', series: 'KXETH15M', horizon: '15m',
+      min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 20,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['order_flow', 'funding_carry', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'ETH 15-min Up/Down — strong volume, funding carry matters. Signals: order_flow, funding_carry (ETH perp basis), black_scholes, imbalance. Avoid: wide spreads.',
+      description: 'ETH 15-min Up/Down — strong volume, funding carry matters.',
     },
     xrp_updown: {
-      asset: 'XRP',
-      series: 'KXXRP15M',
-      horizon: '15m',
-      // XRP 15m: Lower liquidity, wider spreads - need more edge
-      min_edge: 0.003,
-      min_confidence: 0.3,
-      entry_cooldown_sec: 90,
-      max_price: 0.80,
-      min_price: 0.15,
-      kelly_cap: 0.25,
+      asset: 'XRP', series: 'KXXRP15M', horizon: '15m',
+      min_edge: 0.0008, min_confidence: 0.18, entry_cooldown_sec: 30,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.45,
       preferred_signals: ['vol_rp', 'term_struct', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'XRP 15-min Up/Down — lower liquidity, wider spreads. Needs vol_rp (IV vs realized) and term_struct (cross-expiry). Higher edge threshold. Avoid: wide spreads.',
+      description: 'XRP 15-min Up/Down — lower liquidity, wider spreads.',
     },
     btc_1h_updown: {
-      asset: 'BTC',
-      series: 'KXBTCD',
-      horizon: '1d',
-      // BTC Daily: Longer horizon, settlement alpha matters
-      min_edge: 0.0015,
-      min_confidence: 0.2,
-      entry_cooldown_sec: 300,
-      max_price: 0.90,
-      min_price: 0.05,
-      kelly_cap: 0.4,
+      asset: 'BTC', series: 'KXBTCD', horizon: '1d',
+      min_edge: 0.0005, min_confidence: 0.12, entry_cooldown_sec: 120,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
       regime_avoid: ['arbitrage'],
-      description: 'BTC Daily Ladder — long horizon to settlement. Settlement alpha (CF BRTI vs spot) dominates final hour. Term structure and cross-expiry for curve trades. Longer cooldown.',
+      description: 'BTC Daily Ladder — long horizon to settlement. Settlement alpha (CF BRTI vs spot) dominates final hour.',
     },
     eth_1h_updown: {
-      asset: 'ETH',
-      series: 'KXETHD',
-      horizon: '1d',
-      min_edge: 0.002,
-      min_confidence: 0.25,
-      entry_cooldown_sec: 300,
-      max_price: 0.90,
-      min_price: 0.05,
-      kelly_cap: 0.35,
+      asset: 'ETH', series: 'KXETHD', horizon: '1d',
+      min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 120,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
       preferred_signals: ['settlement_alpha', 'funding_carry', 'term_struct', 'black_scholes'],
       regime_avoid: ['arbitrage'],
-      description: 'ETH Daily Ladder — settlement alpha + funding carry (ETH basis). Term structure across expiries.',
+      description: 'ETH Daily Ladder — settlement alpha + funding carry (ETH basis).',
     },
     xrp_1h_updown: {
-      asset: 'XRP',
-      series: 'KXXRPD',
-      horizon: '1d',
-      min_edge: 0.0025,
-      min_confidence: 0.3,
-      entry_cooldown_sec: 300,
-      max_price: 0.85,
-      min_price: 0.10,
-      kelly_cap: 0.3,
-      preferred_signals: ['settlement_alpha', 'vol_rp', 'term_struct'],
-      regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'XRP Daily Ladder — settlement focus with vol risk premium.',
+      asset: 'XRP', series: 'KXXRPD', horizon: '1d',
+      min_edge: 0.0008, min_confidence: 0.18, entry_cooldown_sec: 150,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.45,
+      preferred_signals: ['settlement_alpha', 'term_struct', 'black_scholes', 'cross_expiry'],
+      regime_avoid: ['arbitrage'],
+      description: 'XRP Daily Ladder — settlement alpha across expiries.',
     },
     hyperliquid_updown: {
-      asset: 'HYPE',
-      series: 'KXHYPE15M',
-      horizon: '15m',
-      // HYPE: Newer, volatile, lower liquidity
-      min_edge: 0.0035,
-      min_confidence: 0.35,
-      entry_cooldown_sec: 120,
-      max_price: 0.80,
-      min_price: 0.15,
-      kelly_cap: 0.2,
-      preferred_signals: ['order_flow', 'vol_rp', 'imbalance', 'black_scholes'],
+      asset: 'HYPE', series: 'KXHYPE15M', horizon: '15m',
+      min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 20,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      preferred_signals: ['order_flow', 'vol_rp', 'black_scholes', 'imbalance'],
       regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'Hyperliquid 15-min Up/Down — volatile, lower liquidity. Higher edge/confidence needed. Order flow toxicity + vol_rp key. Tight kelly cap.',
+      description: 'HYPE 15-min Up/Down — newer asset, volatility-driven.',
     },
     hyperliquid_1h_updown: {
-      asset: 'HYPE',
-      series: 'KXHYPE',
-      horizon: '1h',
-      min_edge: 0.003,
-      min_confidence: 0.3,
-      entry_cooldown_sec: 180,
-      max_price: 0.85,
-      min_price: 0.10,
-      kelly_cap: 0.25,
-      preferred_signals: ['term_struct', 'vol_rp', 'black_scholes'],
-      regime_avoid: ['wide_spread', 'arbitrage'],
-      description: 'Hyperliquid 1-Hour — term structure across HYPE expiries. Vol risk premium.',
+      asset: 'HYPE', series: 'KXHYPE', horizon: '1h',
+      min_edge: 0.0005, min_confidence: 0.15, entry_cooldown_sec: 60,
+      max_price: 0.95, min_price: 0.02, kelly_cap: 0.5,
+      preferred_signals: ['order_flow', 'vol_rp', 'term_struct', 'black_scholes'],
+      regime_avoid: ['arbitrage'],
+      description: 'HYPE 1-Hour Up/Down — hourly contracts.',
     },
     all_no_markets: {
       asset: 'ALL',
@@ -813,16 +716,16 @@ function defaultState() {
       description: 'ALL NO MARKETS — scans ALL Kalshi series for NO-side edge. High min_edge (0.8%), real quotes only. Vol-adjusted stops, 2.5:1 R:R. Maker at bid only.',
     },
   },
-    signal_weights: brain.signalStats(),
-    signal_outcomes: [],
-    lanes: {},
-    dry: { positions: [], closed: [], balance: 0, starting_balance: DRY_PAPER_STARTING_BALANCE, entries: 0, running: false },
-    alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
-    logs: [],
-    booted_at: new Date().toISOString(),
-    settlement_db: [],
-    fill_quality_db: [],
-    webhooks: [],
+  signal_weights: brain.signalStats(),
+  signal_outcomes: [],
+  lanes: {},
+  dry: { positions: [], closed: [], balance: 0, starting_balance: DRY_PAPER_STARTING_BALANCE, entries: 0, running: false },
+  alerts: { enabled: false, telegram_url: '', discord_url: '', last_sent: null },
+  logs: [],
+  booted_at: new Date().toISOString(),
+  settlement_db: [],
+  fill_quality_db: [],
+  webhooks: [],
   };
 }
 function loadState() {
@@ -922,6 +825,7 @@ function perSecondVol(product, windowSec) {
   const perBar = Math.sqrt(varc);
   return perBar / Math.sqrt(avgDt); // per root-second
 }
+global.perSecondVol = perSecondVol;
 
 function normCdf(x) {
   // Abramowitz-Stegun 7.1.26
@@ -1265,6 +1169,31 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   };
   state.dry.closed.push(trade);
   
+  // Update lane equity curve for charts
+  const ls = laneState(pos.strategy);
+  const day = String(trade.exit_timestamp || '').slice(0, 10);
+  if (day) {
+    const existingIdx = ls.equity.labels.indexOf(day);
+    const dayPnl = trade.pnl || 0;
+    if (existingIdx >= 0) {
+      ls.equity.pnl[existingIdx] = Number((ls.equity.pnl[existingIdx] + dayPnl).toFixed(2));
+    } else {
+      ls.equity.labels.push(day);
+      ls.equity.pnl.push(Number(dayPnl.toFixed(2)));
+    }
+    // Keep labels and pnl sorted by date
+    const combined = ls.equity.labels.map((label, i) => ({ label, pnl: ls.equity.pnl[i] }));
+    combined.sort((a, b) => a.label.localeCompare(b.label));
+    ls.equity.labels = combined.map(c => c.label);
+    ls.equity.pnl = combined.map(c => c.pnl);
+  }
+  
+  // Update lane stats
+  ls.trades++;
+  if (pnl > 0) ls.wins++; else ls.losses++;
+  ls.realized = Number((ls.realized + pnl).toFixed(2));
+  ls.heartbeat = new Date().toISOString();
+  
   // Record fill quality
   if (fillQuality != null) {
     state.fill_quality_db.push({
@@ -1281,11 +1210,6 @@ function closeDryPosition(pos, exitPrice, reason, result) {
     if (state.fill_quality_db.length > 10000) state.fill_quality_db.shift();
   }
   
-  const ls = laneState(pos.strategy);
-  ls.trades++;
-  if (pnl > 0) ls.wins++; else ls.losses++;
-  ls.realized = Number((ls.realized + pnl).toFixed(2));
-  ls.heartbeat = new Date().toISOString();
   log('dry_close', { strategy: pos.strategy, market: pos.market_id, side: pos.side, entry: pos.entry_price, exit: exitPrice, reason, pnl, result: result || '', fill_quality: fillQuality });
   broadcast('strategy', pos.strategy + ' exit ' + pos.market_id + ' @ ' + exitPrice + ' pnl ' + pnl);
   fireWebhooks('trade_exit', { market_id: pos.market_id, side: pos.side, strategy: pos.strategy, entry_price: pos.entry_price, exit_price: exitPrice, pnl, reason, timestamp: new Date().toISOString() });
@@ -2157,6 +2081,21 @@ async function serveAllNoMarkets(res) {
   } catch (e) { res.writeHead(500); return res.end('page missing: ' + e.message); }
 }
 
+  async function fireWebhooks(event, data) {
+    for (const wh of (state.webhooks || [])) {
+      if (wh.events.includes(event)) {
+        try {
+          await fetch(wh.url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Kai-Signature': crypto.createHmac('sha256', ENV.KILO_TOKEN || '').update(JSON.stringify(data)).digest('hex') },
+            body: JSON.stringify({ event, data, timestamp: new Date().toISOString() }),
+            timeout: 5000
+          });
+        } catch (e) { console.error('webhook failed:', wh.id, e.message); }
+      }
+    }
+  }
+
 async function handle(req, res) {
   const startTime = Date.now();
   const u = new URL(req.url, 'http://' + HOST + ':' + PORT);
@@ -2250,21 +2189,6 @@ async function handle(req, res) {
     return json(res, { ok: true });
   }
 
-  // --- fire webhook helper
-  async function fireWebhooks(event, data) {
-    for (const wh of (state.webhooks || [])) {
-      if (wh.events.includes(event)) {
-        try {
-          await fetch(wh.url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Kai-Signature': crypto.createHmac('sha256', ENV.KILO_TOKEN || '').update(JSON.stringify(data)).digest('hex') },
-            body: JSON.stringify({ event, data, timestamp: new Date().toISOString() }),
-            timeout: 5000
-          });
-        } catch (e) { console.error('webhook failed:', wh.id, e.message); }
-      }
-    }
-  }
 
   if (p === '/api/logs') {
     const n = Math.max(1, Math.min(2000, Number(u.searchParams.get('lines') || 100)));
@@ -2920,6 +2844,51 @@ async function boot() {
     );
   coinbaseWS.connect();
 
+
+  // REQUEST THROTTLE - protects PC from API overload (initialized after all functions defined)
+  const THROTTLE = {
+    maxConcurrent: 3,           // max simultaneous requests
+    minIntervalMs: 500,         // min ms between requests
+    queue: [],
+    running: 0,
+    lastRequestTime: 0,
+    
+    async run(fn) {
+      return new Promise((resolve, reject) => {
+        this.queue.push({ fn, resolve, reject });
+        this.process();
+      });
+    },
+    
+    async process() {
+      while (this.queue.length && this.running < this.maxConcurrent) {
+        const now = Date.now();
+        const wait = Math.max(0, this.minIntervalMs - (now - this.lastRequestTime));
+        if (wait > 0) {
+          await new Promise(r => setTimeout(r, wait));
+        }
+        const { fn, resolve, reject } = this.queue.shift();
+        this.running++;
+        this.lastRequestTime = Date.now();
+        try {
+          const result = await fn();
+          resolve(result);
+        } catch (e) {
+          reject(e);
+        } finally {
+          this.running--;
+          this.process();
+        }
+      }
+    }
+  };
+
+  // Wrap kalshi.raw with throttle
+  const originalKalshiRaw = require('./kalshi.js').raw;
+  require('./kalshi.js').raw = async function(acctName, method, route, opts) {
+    return THROTTLE.run(() => originalKalshiRaw(acctName, method, route, opts));
+  };
+
   // OPERATOR_LAW: exterminate any supervisor/watchdog on boot and continuously
   // so nothing can ever override the operator's button pushes — imperial law.
   try { exterminateSupervisors(); } catch (e) { }
@@ -2953,6 +2922,11 @@ async function boot() {
   kalshiWS.subscribeMarkets(seriesList);
   kalshiWS.subscribeFills();
   kalshiWS.subscribeOrders();
+
+  // Main engine tick - evaluates all lanes every 2 seconds
+  setInterval(async () => {
+    try { await engineTick(); } catch (e) { console.error('[engineTick] Error:', e.message); }
+  }, 2000);
 
   server.listen(PORT, HOST, () => {
     console.log('Kai-Mirror (DRY) listening on http://' + HOST + ':' + PORT + '/');
