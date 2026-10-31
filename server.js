@@ -1040,6 +1040,16 @@ async function quoteForTicker(ticker) {
 }
 
 // ---------------------------------------------------------------------------
+function clipState() { return state.clip_state || (state.clip_state = { base: 3, max: 25, ratchet_until: 0 }); }
+function effectiveClip() {
+  const cs = clipState();
+  if (cs.ratchet_until && Date.now() < cs.ratchet_until) return cs.base;
+  const equity = dryEquity();
+  const baseline = state.dry.starting_balance || 303;
+  const target = Math.round(cs.base * Math.max(1, equity / baseline));
+  return Math.max(cs.base, Math.min(cs.max, target));
+}
+
 // DRY book (the ONLY simulated execution) - real quotes, real settlements
 // ---------------------------------------------------------------------------
 function deployed() {
@@ -1119,7 +1129,7 @@ function dryAccountPayload() {
 }
 
 function openDryPosition(lane, q, side, price, fair, edge, sigma) {
-  const qty = Math.max(1, Math.floor(state.runtime.clip / price));
+  const qty = Math.max(1, Math.floor(effectiveClip() / price));
   const cost = Number((qty * price).toFixed(4));
   if (dryCash() < cost) { const ls = laneState(lane.name); ls.skips++; ls.last_skip = 'insufficient dry cash'; return null; }
   const stop = Number((price * (1 - state.runtime.stop_loss)).toFixed(3));
@@ -1214,7 +1224,14 @@ function closeDryPosition(pos, exitPrice, reason, result) {
   
   // Update lane stats
   ls.trades++;
-  if (pnl > 0) ls.wins++; else { ls.losses++; ls.loss_cooldown_until = Date.now() + 600000; }
+  if (pnl > 0) ls.wins++; else {
+  ls.losses++; ls.loss_cooldown_until = Date.now() + 600000;
+  if (pnl < 0 && Math.abs(pnl) >= 0.25 * (state.dry.starting_balance || 303)) {
+    state.clip_state = state.clip_state || { base: 3, max: 25, ratchet_until: 0 };
+    state.clip_state.ratchet_until = Date.now() + 30 * 60 * 1000;
+    log('clip_ratchet', { pnl, baseline: state.dry.starting_balance || 303 });
+  }
+}
   ls.realized = Number((ls.realized + pnl).toFixed(2));
   ls.heartbeat = new Date().toISOString();
   
