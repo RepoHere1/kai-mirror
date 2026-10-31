@@ -2599,7 +2599,7 @@ async function handle(req, res) {
     }
 
   // --- snapshot + stream
-  if (p === '/api/snapshot') {
+  if (p === '/api/live') {
     const b = u.searchParams.get('book');
     return json(res, snapshotPayload(b === 'dry' ? 'dry' : (b === 'dry' ? 'dry' : undefined)));
   }
