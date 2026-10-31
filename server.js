@@ -35,6 +35,7 @@ const kalshi = require('./kalshi');
 const kilo = require('./kilo');
 const brain = require('./brain_dry');
 const series_kind = require('./series_kind');
+const quote_stream = require('./quote_stream');
 const { KalshiWS } = require('./kalshi_ws');
 const { CoinbaseWS } = require('./coinbase_ws');
 
@@ -893,6 +894,7 @@ async function fetchOptionsChain(series) {
     const ms = ((r.data && r.data.markets) || []).map(quoteFromMarket);
     // Sort by strike for easy access
     ms.sort((a, b) => (a.strike || 0) - (b.strike || 0));
+    for (const q of ms) quote_stream.apply(q);
     const out = { at: Date.now(), markets: ms, source: r.source, host: r.host, ms: r.ms, fetched_at: r.at };
     optionsChainCache.set(key, out);
     return out;
@@ -906,10 +908,12 @@ async function fetchOptionsChain(series) {
 async function marketsForSeries(series, limit) {
   const key = series + ':' + (limit || 5);
   const hit = marketCache.get(key);
-  if (hit && Date.now() - hit.at < 2000) return hit;
+  if (hit && Date.now() - hit.at < 30000) return hit; // static only; bids stream in via quote_stream
   try {
     const r = await kalshi.get('/markets', { query: { limit: limit || 5, status: 'open', series_ticker: series }, ttlMs: 1500 });
     const ms = ((r.data && r.data.markets) || []).map(quoteFromMarket);
+    quote_stream.note(ms);
+    for (const q of ms) quote_stream.apply(q);
     const out = { at: Date.now(), markets: ms, source: r.source, host: r.host, ms: r.ms, fetched_at: r.at };
     marketCache.set(key, out);
     return out;
@@ -1031,7 +1035,7 @@ async function quoteForTicker(ticker) {
   try {
     const r = await kalshi.get('/markets/' + ticker, { ttlMs: 2000 });
     const m = r.data && r.data.market;
-    return quoteFromMarket(m);
+    return quote_stream.apply(quoteFromMarket(m));
   } catch (e) { return null; }
 }
 
@@ -2922,6 +2926,7 @@ async function boot() {
   try { exterminateSupervisors(); } catch (e) { }
   setInterval(() => { try { exterminateSupervisors(); } catch (e) { } }, 3000);
   series_kind.start();
+  quote_stream.start();
 
   // Keep every lane's series quoted even when no lane is running, so the
   // provenance block on the page always names a dry host and a fresh quote.
